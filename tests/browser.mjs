@@ -23,29 +23,60 @@ page.setDefaultTimeout(7000);
 const base = process.env.APP_URL || "http://127.0.0.1:4173";
 const role = async (value) =>
   page.getByLabel("사용자 역할", { exact: true }).selectOption(value);
-const nav = async (name) =>
-  page
-    .getByRole("navigation", { name: "주요 메뉴", exact: true })
-    .getByRole("button", { name, exact: true })
+const nav = async (name) => {
+  const isCenter =
+    (await page.getByLabel("사용자 역할", { exact: true }).inputValue()) ===
+    "center";
+  if (name === "가정 활동" || (name === "일정" && !isCenter)) {
+    await nav("아이 정보");
+    await page
+      .getByRole("button", {
+        name: name === "일정" ? "전체 일정" : "가정 활동",
+        exact: true,
+      })
+      .click();
+    return;
+  }
+  const label =
+    { 오늘: "홈", "공유 기록": "기록", "아이·목표": "아이 정보" }[name] ||
+    (name === "아동" && !isCenter ? "아이 정보" : name);
+  await page
+    .getByRole("navigation", {
+      name: page.viewportSize().width <= 640 ? "모바일 메뉴" : "주요 메뉴",
+      exact: true,
+    })
+    .getByRole("button", { name: label, exact: true })
     .click();
-const fill = async (name, value) =>
-  page.locator(`#edit-form [name="${name}"]`).fill(value);
+};
+async function reveal(locator) {
+  for (const details of await locator.locator("xpath=ancestor::details").all())
+    if ((await details.getAttribute("open")) === null)
+      await details.locator(":scope > summary").click();
+}
+const fill = async (name, value) => {
+  if (["tool", "item", "value", "unit", "context"].includes(name))
+    name = "assessment-0-" + name;
+  const input = page.locator(`#edit-form [name="${name}"]`);
+  await reveal(input);
+  await input.fill(value);
+};
 const submit = async () =>
-  page.locator("#edit-form button[type=submit]").click();
+  page.locator("#edit-form button[type=submit]:not([name=intent])").click();
 const text = () => page.locator("#view-content").innerText();
 const closed = async () =>
   assert.equal(await page.locator("#dialog").evaluate((d) => d.open), false);
 const recordTitle = "가상 놀이 기록 E2E";
 try {
   await page.goto(base);
-  await page
-    .getByRole("heading", { name: "오늘도 한 걸음, 함께 이어가요" })
-    .waitFor();
+  await page.getByRole("heading", { name: "소식에서 다음 만남으로" }).waitFor();
   await page.screenshot({
     path: `${root}/test-results/desktop-home.png`,
     fullPage: true,
   });
-  await page.getByRole("button", { name: "기록하기", exact: true }).click();
+  await page
+    .getByRole("button", { name: "기록하기", exact: true })
+    .first()
+    .click();
   await fill("title", recordTitle);
   await fill(
     "summary",
@@ -57,7 +88,11 @@ try {
     .click();
   await fill("privateNote", "NEVER SHARE THIS PRIVATE NOTE");
   await fill("nextPlan", "다음 회기 관찰 메모");
-  await page.getByLabel("평가값 직접 입력", { exact: true }).check();
+  await page
+    .locator("#dialog summary")
+    .filter({ hasText: /^상세 관찰·측정값$/ })
+    .click();
+  await page.getByRole("button", { name: "측정값 추가", exact: true }).click();
   for (const [k, v] of Object.entries({
     tool: "직접 관찰",
     item: "참여 시간",
@@ -66,6 +101,9 @@ try {
     context: "같은 놀이 공간",
   }))
     await fill(k, v);
+  await reveal(
+    page.getByLabel("목표에 연결된 가정 활동 추가", { exact: true }),
+  );
   await page
     .getByLabel("목표에 연결된 가정 활동 추가", { exact: true })
     .check();
@@ -80,11 +118,9 @@ try {
   await closed();
   assert.ok((await text()).includes(recordTitle));
   checks.push("세션 일정과 연결된 기록·평가·활동 생성");
-  let card = page
-    .locator(".record-card")
-    .filter({
-      has: page.getByRole("heading", { name: recordTitle, exact: true }),
-    });
+  let card = page.locator(".record-card").filter({
+    has: page.getByRole("heading", { name: recordTitle, exact: true }),
+  });
   await card.getByRole("button", { name: "공유 미리보기" }).click();
   assert.ok(
     !(await page.locator("#dialog").innerText()).includes("NEVER SHARE"),
@@ -99,14 +135,12 @@ try {
   assert.equal(await page.locator("#child option").count(), 1);
   checks.push("공유 미리보기·보호자 표시·아동 관계·HTML 이스케이프");
   await nav("가정 활동");
-  let activity = page
-    .locator(".activity-card")
-    .filter({
-      has: page.getByRole("heading", {
-        name: "함께 놀이 선택하기 E2E",
-        exact: true,
-      }),
-    });
+  let activity = page.locator(".activity-card").filter({
+    has: page.getByRole("heading", {
+      name: "함께 놀이 선택하기 E2E",
+      exact: true,
+    }),
+  });
   await activity.getByRole("button", { name: "활동 경험 남기기" }).click();
   await page.locator("[name=result]").selectOption("partial");
   await fill("reaction", "스스로 놀이를 골랐어요 E2E");
@@ -122,6 +156,7 @@ try {
   await fill("reviewNote", "다음 만남에 놀이 시간을 함께 조정 E2E");
   await submit();
   await closed();
+  await nav("기록");
   await page.getByRole("button", { name: "기록 작성", exact: true }).click();
   await page.locator(".previous-context summary").click();
   assert.ok(
@@ -132,11 +167,9 @@ try {
   await page.getByRole("button", { name: "닫기", exact: true }).click();
   checks.push("치료사 피드백 검토와 다음 기록 문맥 연결");
   await nav("기록");
-  card = page
-    .locator(".record-card")
-    .filter({
-      has: page.getByRole("heading", { name: recordTitle, exact: true }),
-    });
+  card = page.locator(".record-card").filter({
+    has: page.getByRole("heading", { name: recordTitle, exact: true }),
+  });
   await card.getByRole("button", { name: "수정", exact: true }).click();
   await fill("summary", "새로 수정한 보호자용 초안 E2E");
   await submit();
@@ -147,11 +180,9 @@ try {
   assert.ok(!(await text()).includes("새로 수정한 보호자용 초안"));
   await role("therapist");
   await nav("기록");
-  card = page
-    .locator(".record-card")
-    .filter({
-      has: page.getByRole("heading", { name: recordTitle, exact: true }),
-    });
+  card = page.locator(".record-card").filter({
+    has: page.getByRole("heading", { name: recordTitle, exact: true }),
+  });
   await card.getByRole("button", { name: "공유 미리보기" }).click();
   await submit();
   await closed();
@@ -161,11 +192,9 @@ try {
   checks.push("초안 수정은 공유본 유지, 재공유 후 갱신");
   await role("therapist");
   await nav("기록");
-  card = page
-    .locator(".record-card")
-    .filter({
-      has: page.getByRole("heading", { name: recordTitle, exact: true }),
-    });
+  card = page.locator(".record-card").filter({
+    has: page.getByRole("heading", { name: recordTitle, exact: true }),
+  });
   await card.getByRole("button", { name: "공유 철회", exact: true }).click();
   await submit();
   await closed();
@@ -228,7 +257,9 @@ try {
   assert.ok((await text()).includes("출석"));
   checks.push("센터 아동 등록·일정 생성·출결 수정");
   await role("therapist");
+  await nav("기록");
   await page.getByLabel("선택한 아동", { exact: true }).selectOption("c1");
+  await nav("기록");
   await page.getByRole("button", { name: "기록 작성", exact: true }).click();
   await fill("title", "실패 시 입력 유지");
   await fill("summary", "저장 실패 검증");
@@ -267,8 +298,8 @@ try {
       r === "center"
         ? ["운영 현황", "아동", "일정"]
         : r === "guardian"
-          ? ["오늘", "아이·목표", "공유 기록", "가정 활동", "일정"]
-          : ["오늘", "아동", "기록", "가정 활동", "일정"];
+          ? ["홈", "대화", "기록", "아이 정보"]
+          : ["홈", "대화", "기록", "아이 정보"];
     for (const name of names) {
       await page
         .getByRole("navigation", { name: "모바일 메뉴", exact: true })
@@ -290,8 +321,9 @@ try {
       fullPage: true,
     });
   }
-  checks.push("390px 모바일 전 역할·13개 화면 가로 넘침 없음");
+  checks.push("390px 모바일 전 역할·11개 화면 가로 넘침 없음");
   await role("therapist");
+  await nav("기록");
   await page.getByRole("button", { name: "기록 작성", exact: true }).click();
   assert.ok(
     await page
@@ -312,15 +344,26 @@ try {
   const other = await context.newPage();
   await other.goto(base);
   await other
-    .getByRole("heading", { name: "오늘도 한 걸음, 함께 이어가요" })
+    .getByRole("heading", { name: "소식에서 다음 만남으로" })
     .waitFor();
+  await nav("기록");
   await page.getByRole("button", { name: "기록 작성", exact: true }).click();
   await fill("title", "다른 탭 충돌 검증");
   await fill("summary", "현재 입력 보존");
+  await other
+    .getByRole("navigation", { name: "주요 메뉴", exact: true })
+    .getByRole("button", { name: "기록", exact: true })
+    .click();
   await other.getByRole("button", { name: "기록 작성", exact: true }).click();
+  await other
+    .locator("#dialog summary")
+    .filter({ hasText: "공유 요약·제목" })
+    .click();
   await other.locator("[name=title]").fill("다른 탭 저장");
   await other.locator("[name=summary]").fill("갱신됨");
-  await other.locator("#edit-form button[type=submit]").click();
+  await other
+    .locator("#edit-form button[type=submit]:not([name=intent])")
+    .click();
   await submit();
   assert.ok(
     (await page.locator("#form-error").innerText()).includes("다른 탭"),

@@ -1,12 +1,26 @@
 import { STORAGE_KEY } from "./config.js";
 import { seed } from "./seed.js";
 import { validateState } from "./domain.js";
+import { upgradeState } from "./conversations.js";
+export const BACKUP_KEY = `${STORAGE_KEY}-backup-schema-2`;
 export function load(storage) {
   try {
     const raw = storage.getItem(STORAGE_KEY);
-    if (raw === null) return { db: seed(), error: null };
-    const db = JSON.parse(raw);
+    if (raw === null) return { db: upgradeState(seed()), error: null };
+    let db = JSON.parse(raw);
     if (!validateState(db)) throw new Error("invalid");
+    if (db.schema === 2) {
+      const upgraded = upgradeState(db);
+      if (!validateState(upgraded)) throw new Error("migration-invalid");
+      // Backup must succeed before replacing the original. setItem is atomic;
+      // a failed conversion/write leaves the original data and all blob IDs intact.
+      if (storage.getItem(BACKUP_KEY) === null)
+        storage.setItem(BACKUP_KEY, raw);
+      if (storage.getItem(STORAGE_KEY) !== raw)
+        throw new Error("migration-conflict");
+      storage.setItem(STORAGE_KEY, JSON.stringify(upgraded));
+      db = upgraded;
+    }
     return { db, error: null };
   } catch {
     return {
@@ -17,6 +31,8 @@ export function load(storage) {
   }
 }
 export function persist(storage, db, previousRevision) {
+  if (!validateState(db))
+    throw new Error("저장할 데이터 연결을 확인해 주세요. 입력을 유지했어요.");
   const raw = storage.getItem(STORAGE_KEY);
   if (raw !== null) {
     let current;

@@ -1,4 +1,5 @@
 import { BRAND, ACCOUNTS, THERAPISTS, today, STORAGE_KEY } from "./config.js";
+import { observeViewport } from "./viewport.js";
 import {
   accessibleChildren,
   currentPublications,
@@ -6,6 +7,16 @@ import {
   mutate,
 } from "./domain.js";
 import { load, persist } from "./repository.js";
+import { conversationView, messageProjection } from "./conversations.js";
+import { chatScreen } from "./chat-ui.js";
+import { ChatController } from "./chat-controller.js";
+import { communicationHome } from "./home-ui.js";
+import {
+  recordEditor,
+  parseRecordForm,
+  assessmentRow,
+  recordDetail,
+} from "./record-ui.js";
 import { MediaStore, saveWithMedia } from "./media-store.js";
 import { AttachmentEditor, mediaGallery, MediaView } from "./media-ui.js";
 import {
@@ -20,6 +31,7 @@ import {
 } from "./ui.js";
 
 const app = document.querySelector("#app");
+observeViewport();
 document.title = `${BRAND.name} · ${BRAND.tagline}`;
 const dialog = document.querySelector("#dialog");
 const mediaStore = new MediaStore();
@@ -61,6 +73,28 @@ try {
 }
 const actor = () => ACCOUNTS[account];
 const getView = () => project(db, actor(), childId);
+let chatOpened = false,
+  chatTarget = "";
+const chat = new ChatController({
+  getState: () => ({ db, actor: actor(), childId }),
+  mediaStore,
+  commit: (...args) => commit(...args),
+  render: (id) => {
+    chatTarget = id;
+    safeRender();
+  },
+  read: (context, id) => {
+    const room = conversationView(db, context.actor, context.childId);
+    const m = room.messages.find((m) => m.id === id);
+    if (!m || m.sequence <= room.lastRead) return;
+    const next = mutate(db, context.actor, "read", {
+      childId: context.childId,
+      id,
+    });
+    persist(storage, next, db.revision);
+    db = next;
+  },
+});
 const roleName = () => ACCOUNTS[account].label;
 const goalName = (id) =>
   db.goals.find((g) => g.id === id)?.title || "연결된 목표";
@@ -84,11 +118,11 @@ const navItems = () =>
         ["schedule", "일정", "calendar"],
       ]
     : [
-        ["home", "오늘", "home"],
-        ["children", account === "guardian" ? "아이·목표" : "아동", "child"],
-        ["records", account === "guardian" ? "공유 기록" : "기록", "record"],
-        ["activities", "가정 활동", "activity"],
-        ["schedule", "일정", "calendar"],
+        ["home", "홈", "home"],
+        ["chat", "대화", "message"],
+
+        ["records", "기록", "record"],
+        ["children", "아이 정보", "child"],
       ];
 function flash(message) {
   const t = document.querySelector("#toast");
@@ -101,10 +135,15 @@ function errorMarkup(message) {
   return `<div class="fatal" role="alert"><h1>기록을 불러오지 못했어요</h1><p>${e(message)}</p>${button("다시 불러오기", "reload")}</div>`;
 }
 function safeRender() {
+  chat.stop();
   pageMedia.clear();
   try {
     render();
     pageMedia.hydrate(app);
+    if (view === "chat") {
+      chat.mount(chatTarget);
+      chatTarget = "";
+    }
   } catch {
     app.innerHTML = errorMarkup(
       "화면에 필요한 데이터가 올바르지 않습니다. 저장된 데이터는 유지했습니다. 개발 담당자에게 확인을 요청해 주세요.",
@@ -118,7 +157,11 @@ function render() {
   }
   const children = accessibleChildren(db, actor());
   if (!children.some((c) => c.id === childId)) childId = children[0]?.id;
-  if (!navItems().some(([id]) => id === view)) view = "home";
+  if (
+    !navItems().some(([id]) => id === view) &&
+    !["schedule", "activities"].includes(view)
+  )
+    view = "home";
   const p = getView();
   try {
     sessionStorage.setItem(
@@ -143,7 +186,7 @@ function render() {
     )
     .join(
       "",
-    )}</select></div></header><main id="main" tabindex="-1"><div class="page-heading"><div><p class="eyebrow">${dateLabel(today(), { year: "numeric", month: "long", day: "numeric", weekday: "long" })}</p><h1>${{ home: account === "center" ? "오늘의 센터" : account === "guardian" ? "아이의 하루를 함께 이어가요" : "오늘도 한 걸음, 함께 이어가요", children: account === "guardian" ? "아이를 함께 이해해요" : "우리 아이들", records: account === "guardian" ? "센터에서 전해온 기록" : "기록과 변화", activities: "가정에서 이어가는 시간", schedule: "함께하는 일정" }[view]}</h1></div>${account === "therapist" && view !== "children" ? button(`${icon("plus")} 기록 작성`, "record", "", "primary") : account === "center" ? button(`${icon("plus")} 일정 등록`, "appointment", "", "primary") : ""}</div><div class="context-bar"><div class="child-select"><span class="avatar ${e(p.child.color)}">${e(p.child.name.slice(0, 1))}</span><label><span class="sr-only">선택한 아동</span><select id="child" aria-label="선택한 아동">${children.map((c) => `<option value="${c.id}" ${c.id === childId ? "selected" : ""}>${e(c.name)} · ${c.age}세</option>`).join("")}</select></label><span class="context-meta">${e(THERAPISTS.find((t) => t.id === p.child.therapistId)?.name || "미배정")}</span></div><span class="demo-note">가상 아동 · 이 브라우저에 저장</span></div><div id="view-content">${{ home: homeView, children: childrenView, records: recordsView, activities: activitiesView, schedule: scheduleView }[view](p)}</div><footer class="page-footer">${e(BRAND.version)} · 실제 아동 정보는 입력하지 마세요.</footer></main></div><nav class="mobile-nav" aria-label="모바일 메뉴">${nav}</nav></div>`;
+    )}</select></div></header><main id="main" tabindex="-1"><div class="page-heading"><div><p class="eyebrow">${dateLabel(today(), { year: "numeric", month: "long", day: "numeric", weekday: "long" })}</p><h1>${{ home: account === "center" ? "오늘의 센터" : account === "guardian" ? "아이의 소식을 함께 나눠요" : "소식에서 다음 만남으로", chat: "대화", children: account === "guardian" ? "아이를 함께 이해해요" : "우리 아이들", records: account === "guardian" ? "센터에서 전해온 기록" : "기록과 변화", activities: "가정에서 이어가는 시간", schedule: "함께하는 일정" }[view]}</h1></div>${view === "home" && account !== "center" ? button(account === "guardian" ? "소식 보내기" : "대화 시작", "start-chat", "", "primary") : account === "therapist" && !["children", "chat"].includes(view) ? button(`${icon("plus")} 기록 작성`, "record", "", "primary") : account === "center" ? button(`${icon("plus")} 일정 등록`, "appointment", "", "primary") : ""}</div><div class="context-bar" ${["home", "chat"].includes(view) && account !== "center" ? "hidden" : ""}><div class="child-select"><span class="avatar ${e(p.child.color)}">${e(p.child.name.slice(0, 1))}</span><label><span class="sr-only">선택한 아동</span><select id="child" aria-label="선택한 아동">${children.map((c) => `<option value="${c.id}" ${c.id === childId ? "selected" : ""}>${e(c.name)} · ${c.age}세</option>`).join("")}</select></label><span class="context-meta">${e(THERAPISTS.find((t) => t.id === p.child.therapistId)?.name || "미배정")}</span></div><span class="demo-note">가상 아동 · 이 브라우저에 저장</span></div><div id="view-content">${{ home: homeView, chat: () => chatScreen(db, actor(), childId, chatOpened), children: childrenView, records: recordsView, activities: activitiesView, schedule: scheduleView }[view](p)}</div><footer class="page-footer">${e(BRAND.version)} · 실제 아동 정보는 입력하지 마세요.</footer></main></div><nav class="mobile-nav" aria-label="모바일 메뉴">${nav}</nav></div>`;
 }
 function heading(title, subtitle = "", action = "") {
   return `<div class="section-heading"><div><h2>${title}</h2>${subtitle ? `<p>${subtitle}</p>` : ""}</div>${action}</div>`;
@@ -154,37 +197,9 @@ function appointmentRows(rows, { all = false } = {}) {
     : empty("예정된 일정이 없어요", "새 일정이 등록되면 여기에 표시돼요.");
 }
 function homeView(p) {
-  if (account === "center") return centerView(p);
-  const pubs = currentPublications(db, childId);
-  const unreviewed = p.feedback.filter((f) => !f.reviewed);
-  const next = p.appointments
-    .filter((a) => a.date >= today() && a.status === "scheduled")
-    .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))[0];
-  const active = p.goals.filter((g) => g.status === "active");
-  const pending = pubs.filter(
-    (x) => x.activity && !p.feedback.some((f) => f.publicationId === x.id),
-  );
-  const title =
-    account === "therapist"
-      ? unreviewed.length
-        ? `가정에서 ${unreviewed.length}개의 소식이 왔어요`
-        : `${e(p.child.name)}의 다음 한 걸음을 준비해요`
-      : pending.length
-        ? "오늘은 어떤 경험을 했나요?"
-        : "작은 경험도 소중한 기록이에요";
-  return `<section class="hero"><div class="hero-content"><span class="hero-kicker">${account === "therapist" ? "오늘 먼저 확인해요" : "센터와 가정을 잇는 한 걸음"}</span><h2>${title}</h2><p>${account === "therapist" ? "가정의 경험을 확인하고, 오늘의 기록으로 이어가세요." : "함께한 활동과 아이의 반응을 담당 치료사에게 전해 주세요."}</p>${button(`${account === "therapist" ? (unreviewed.length ? "피드백 확인하기" : "기록 시작하기") : "가정 활동 확인하기"} ${icon("arrow")}`, account === "therapist" ? (unreviewed.length ? "to-activities" : "record") : "to-activities", "", "primary")}</div><div class="hero-art" aria-hidden="true"><div class="art-ring ring-one"></div><div class="art-ring ring-two"></div><div class="art-dot"></div><span>함께, 한 걸음</span></div></section><div class="content-grid"><div><section class="panel">${heading("다음 일정", next ? "센터에서 만나는 시간" : "예정된 일정을 확인해요", button("일정 보기", "nav", "schedule", "text"))}${appointmentRows(next ? [next] : [])}</section><section class="panel">${heading(account === "therapist" ? "최근 기록" : "새로 전해온 기록", "아이의 경험을 시간순으로 살펴봐요", button("전체 보기", "nav", "records", "text"))}${
-    account === "therapist"
-      ? recordCards(
-          p.records.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 2),
-          true,
-        )
-      : publicationCards(
-          pubs
-            .slice()
-            .sort((a, b) => b.date.localeCompare(a.date))
-            .slice(0, 2),
-        )
-  }</section></div><div><section class="panel">${heading("함께 정한 목표", `${active.length}개의 목표를 이어가고 있어요`)}${active.length ? active.map((g) => `<div class="goal-mini"><span class="goal-icon">${icon("target")}</span><div><strong>${e(g.title)}</strong><p>${e(g.description)}</p></div></div>`).join("") : empty("첫 목표를 정해 보세요", "보호자의 관심사에서 시작해요.")}${button("아이와 목표 보기", "nav", "children", "wide soft")}</section><section class="panel family-note"><span class="tiny-label">보호자가 바라는 변화</span><p>“${e(p.child.concern || "아직 남긴 관심사가 없어요.")}”</p>${account === "guardian" ? button("관심사 남기기", "concern", "", "text") : badge("가족과 함께 정하는 방향", "blue")}</section><div class="subtle-info">${icon("lock")} 공유할 내용은 치료사가 먼저 확인해요.</div></div></div>`;
+  return account === "center"
+    ? centerView(p)
+    : communicationHome(db, actor(), { heading, appointmentRows });
 }
 function recordCards(records, compact = false) {
   if (!records.length)
@@ -196,7 +211,7 @@ function recordCards(records, compact = false) {
   return records
     .map(
       (r) =>
-        `<article class="record-card"><div class="meta">${badge(r.publicationId ? "공유 중" : "내부 초안", r.publicationId ? "green" : "neutral")}<time>${dateLabel(r.date)}</time></div><h3>${e(r.title)}</h3><p class="goal-ref">${icon("target")}${e(goalName(r.goalId))}</p><p class="body-copy">${e(r.summary || "보호자에게 공유할 내용을 아직 작성하지 않았어요.")}</p>${mediaGallery(r.attachments, true)}${!compact ? `<details><summary>내부 기록과 평가 보기</summary><div class="private-content"><span class="tiny-label">치료사만 보는 메모</span><p>${e(r.privateNote || "작성된 메모가 없어요.")}</p>${r.assessment ? `<p><strong>${e(r.assessment.tool)} · ${e(r.assessment.item)}</strong><br>${e(r.assessment.value)} ${e(r.assessment.unit)} · ${e(r.assessment.context)}</p>` : ""}<span class="tiny-label">다음 회기</span><p>${e(r.nextPlan || "다음 회기 메모가 없어요.")}</p></div></details>` : ""}<div class="card-actions">${button("수정", "record", r.id, "text")}${button("공유 미리보기", "preview", r.id, "soft")}${r.publicationId ? button("공유 철회", "unpublish", r.id, "text muted") : ""}</div></article>`,
+        `<article class="record-card"><div class="meta">${badge(r.publicationId ? "공유 중" : r.status === "draft" ? "작성 중인 초안" : "내부 기록", r.publicationId ? "green" : "neutral")}<time>${dateLabel(r.date)}</time></div><h3>${e(r.title)}</h3><p class="goal-ref">${icon("target")}${e(goalName(r.goalId))}</p><p class="body-copy">${e(r.summary || "보호자에게 공유할 내용을 아직 작성하지 않았어요.")}</p>${mediaGallery(r.attachments, true)}${!compact ? `<details><summary>내부 기록과 평가 보기</summary><div class="private-content">${recordDetail(r)}</div></details>` : ""}<div class="card-actions">${button("수정", "record", r.id, "text")}${button("공유 미리보기", "preview", r.id, "soft")}${r.publicationId ? button("공유 철회", "unpublish", r.id, "text muted") : ""}</div></article>`,
     )
     .join("");
 }
@@ -268,7 +283,9 @@ function timeline(p, goalFilter = "all") {
 function assessmentCompare(records) {
   const groups = new Map();
   for (const r of records
-    .filter((r) => r.assessment)
+    .flatMap((r) =>
+      (r.assessments || []).map((assessment) => ({ ...r, assessment })),
+    )
     .sort((a, b) => a.date.localeCompare(b.date))) {
     const a = r.assessment;
     const key = JSON.stringify([r.goalId, a.tool, a.item, a.unit, a.context]);
@@ -286,7 +303,7 @@ function childrenView(p) {
   const profile = `<section class="panel profile"><div class="profile-header"><span class="avatar large ${e(p.child.color)}">${e(p.child.name.slice(0, 1))}</span><div><h2>${e(p.child.name)}</h2><p>${p.child.age}세 · 가상 아동</p></div>${badge("함께하는 중", "green")}</div><div class="profile-facts"><span>담당 치료사<strong>${e(THERAPISTS.find((t) => t.id === p.child.therapistId)?.name || "미배정")}</strong></span><span>예정된 일정<strong>${p.appointments.filter((a) => a.date >= today() && a.status === "scheduled").length}건</strong></span></div></section>`;
   if (account === "center")
     return `<div class="children-grid">${roster}<div>${profile}<section class="panel">${heading("아동 일정", "센터에서는 기본 정보와 운영 현황을 확인해요")}${appointmentRows(p.appointments.slice().sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time)))}<p class="footnote">기록 작성 ${p.recordCount}건 · 임상 기록과 가족 피드백 내용은 이 화면에 표시하지 않습니다.</p></section></div></div>`;
-  return `<div class="${account === "guardian" ? "content-grid" : "children-grid"}">${roster}<div>${profile}<section class="panel">${heading("가족이 바라는 변화", "목표를 함께 정하는 출발점", account === "guardian" ? button("수정", "concern", "", "text") : "")}<p class="body-copy">${e(p.child.concern || "아직 남긴 관심사가 없어요.")}</p></section><section class="panel">${heading("함께 정한 목표", "관찰한 변화에 맞춰 목표를 조정해요", account === "therapist" ? button("목표 추가", "goal", "", "soft") : "")}${p.goals.length ? p.goals.map((g) => `<article class="goal-card"><div class="meta">${badge({ active: "이어가는 중", achieved: "달성", paused: "잠시 보류" }[g.status], g.status === "achieved" ? "green" : "blue")}</div><h3>${e(g.title)}</h3><p>${e(g.description)}</p>${account === "therapist" ? button("목표 수정", "goal", g.id, "text") : ""}</article>`).join("") : empty("아직 정한 목표가 없어요", "보호자의 관심사를 참고해 첫 목표를 정해 주세요.")}</section></div>${account === "guardian" ? `<aside class="panel">${heading("함께 쌓은 이야기")}${timeline(p)}</aside>` : ""}</div>`;
+  return `<div class="${account === "guardian" ? "content-grid" : "children-grid"}">${roster}<div>${profile}<div class="child-shortcuts">${button("대화 열기", "open-chat", childId, "soft")}${button("전체 일정", "nav", "schedule", "soft")}${button("가정 활동", "nav", "activities", "soft")}</div><section class="panel">${heading("가족이 바라는 변화", "목표를 함께 정하는 출발점", account === "guardian" ? button("수정", "concern", "", "text") : "")}<p class="body-copy">${e(p.child.concern || "아직 남긴 관심사가 없어요.")}</p></section><section class="panel">${heading("함께 정한 목표", "관찰한 변화에 맞춰 목표를 조정해요", account === "therapist" ? button("목표 추가", "goal", "", "soft") : "")}${p.goals.length ? p.goals.map((g) => `<article class="goal-card"><div class="meta">${badge({ active: "이어가는 중", achieved: "달성", paused: "잠시 보류" }[g.status], g.status === "achieved" ? "green" : "blue")}</div><h3>${e(g.title)}</h3><p>${e(g.description)}</p>${account === "therapist" ? button("목표 수정", "goal", g.id, "text") : ""}</article>`).join("") : empty("아직 정한 목표가 없어요", "보호자의 관심사를 참고해 첫 목표를 정해 주세요.")}</section></div>${account === "guardian" ? `<aside class="panel">${heading("함께 쌓은 이야기")}${timeline(p)}</aside>` : ""}</div>`;
 }
 function feedbackCard(f, pub) {
   return `<article class="feedback-card"><div class="meta">${badge(resultLabels[f.result], f.result === "done" ? "green" : "neutral")}<time>${dateLabel(f.date)}</time>${badge(f.reviewed ? "치료사 확인" : "확인 대기", f.reviewed ? "neutral" : "blue")}</div><strong>${e(pub?.activity?.title || "가정 활동")}</strong><p>${e(f.reaction)}</p>${mediaGallery(f.attachments)}${f.difficulty ? `<p class="difficulty">어려웠던 점 · ${e(f.difficulty)}</p>` : ""}${account === "therapist" && f.reviewNote ? `<div class="review-note">다음 회기에 반영 · ${e(f.reviewNote)}</div>` : ""}<div class="card-actions">${account === "therapist" ? button(f.reviewed ? "반영 메모 수정" : "확인하고 다음 회기 준비", "review", f.id, "soft") : currentPublications(db, childId).some((p) => p.id === f.publicationId) ? button("피드백 수정", "feedback-edit", f.id, "text") : ""}</div></article>`;
@@ -355,58 +372,146 @@ function mountAttachments(items = [], sharing = false) {
     },
   });
 }
-function recordForm(id = "", appointmentId = "") {
+function recordForm(
+  id = "",
+  appointmentId = "",
+  referenceId = "",
+  templateId = "",
+) {
   const p = getView();
   if (!p.goals.length) {
     flash("첫 기록을 작성하기 전에 목표를 정해 주세요.");
     openAction("goal");
     return;
   }
-  const r = p.records.find((x) => x.id === id) || {};
-  const a = r.assessment || {};
-  const h = r.activity || {};
+  let r = p.records.find((x) => x.id === id) || {};
+  if (templateId) {
+    const source = p.records.find((x) => x.id === templateId);
+    r = {
+      goalId: source.goalId,
+      assessments: (source.assessments || []).map((a) => ({ ...a, value: "" })),
+    };
+  }
+  const refs = referenceId ? [referenceId] : r.referenceMessageIds || [];
+  const messages = refs
+    .map((id) => db.messages.find((m) => m.id === id && m.childId === childId))
+    .filter(Boolean)
+    .map((m) => messageProjection(db, actor(), m));
   const selectedAppointment = r.appointmentId || appointmentId;
-  const context = [
+  const date =
+    r.date ||
+    db.appointments.find((a) => a.id === selectedAppointment)?.date ||
+    today();
+  openForm(
+    id ? "세션 기록 수정" : "오늘의 세션 기록",
+    recordEditor(r, p.goals, date, messages),
+    "record",
+    {
+      id,
+      childId,
+      appointmentId: selectedAppointment || "",
+      referenceMessageIds: refs,
+      format: r.format || "structured",
+    },
+    "기록 저장",
+  );
+  const titleInput = dialog.querySelector("[name=title]");
+  let automaticTitle = !r.title;
+  const suggestTitle = () => {
+    if (!automaticTitle) return;
+    const day = dialog.querySelector("[name=date]").value;
+    const activity = dialog
+      .querySelector("[name=performed]")
+      .value.trim()
+      .slice(0, 50);
+    titleInput.value = `${day} ${activity || "세션 기록"}`;
+  };
+  titleInput.addEventListener("input", () => {
+    automaticTitle = false;
+  });
+  dialog.querySelector("[name=date]").addEventListener("input", suggestTitle);
+  dialog
+    .querySelector("[name=performed]")
+    .addEventListener("input", suggestTitle);
+  suggestTitle();
+  const footer = dialog.querySelector(".dialog-footer");
+  footer.insertAdjacentHTML(
+    "afterbegin",
+    '<button type="submit" class="button text" name="intent" value="draft" formnovalidate>초안 저장</button>',
+  );
+  footer.insertAdjacentHTML(
+    "beforeend",
+    '<button type="submit" class="button primary" name="intent" value="share">보호자 공유 준비</button>',
+  );
+  const wrap = document.createElement("details");
+  wrap.className = "record-details";
+  wrap.open = !!r.attachments?.length;
+  wrap.innerHTML = "<summary>사진·동영상</summary><div></div>";
+  dialog.querySelector("#form-error").before(wrap);
+  attachmentEditor = new AttachmentEditor(
+    wrap.querySelector("div"),
+    r.attachments || [],
+    mediaStore,
+    {
+      sharing: true,
+      onChange: () => {
+        dirty = true;
+      },
+    },
+  );
+  const last = p.records
+    .filter((x) => x.id !== id)
+    .sort((a, b) => b.date.localeCompare(a.date))[0];
+  if (!id && last)
+    dialog
+      .querySelector(".dialog-body")
+      .insertAdjacentHTML(
+        "afterbegin",
+        button(
+          "이전 목표·측정 항목만 가져오기",
+          "record-template",
+          last.id,
+          "text",
+        ),
+      );
+  const notes = [
+    ...db.messages
+      .filter((m) => m.childId === childId && m.reviewed && m.reviewNote)
+      .slice(-3)
+      .map((m) => m.reviewNote),
     ...p.feedback
       .filter((f) => f.reviewed && f.reviewNote)
       .slice(-3)
       .map((f) => f.reviewNote),
     ...p.records
-      .filter((x) => x.nextPlan && x.id !== id)
-      .sort((a, b) => b.date.localeCompare(a.date))
-      .slice(0, 1)
-      .map((x) => x.nextPlan),
+      .filter((r) => r.nextPlan && r.id !== id)
+      .slice(-1)
+      .map((r) => r.nextPlan),
   ];
-  openForm(
-    id ? "세션 기록 수정" : "오늘의 세션 기록",
-    `${r.publicationId ? '<p class="notice">수정한 내용은 다시 공유하기 전까지 보호자에게 반영되지 않아요. 기존 공유본은 유지됩니다.</p>' : ""}<div class="form-grid">${field("기록 날짜", "date", r.date || db.appointments.find((a) => a.id === selectedAppointment)?.date || today(), { type: "date", required: true })}${select(
-      "연결할 목표",
-      "goalId",
-      p.goals.map((g) => [g.id, g.title]),
-      r.goalId || p.goals[0].id,
-    )}</div>${field("기록 제목", "title", r.title || "", { required: true, max: 100, placeholder: "예: 놀이 참여와 움직임 관찰" })}${field("보호자에게 전할 내용", "summary", r.summary || "", { type: "textarea", placeholder: "오늘 관찰한 모습과 함께 살펴볼 내용을 쉬운 말로 적어 주세요.", hint: "공유 미리보기에서 확인한 뒤 전달돼요." })}<details ${r.privateNote || r.nextPlan ? "open" : ""}><summary>${icon("lock")} 치료사 내부 메모</summary>${field("내부 메모", "privateNote", r.privateNote || "", { type: "textarea", hint: "보호자와 센터 운영 화면에는 표시되지 않아요." })}${field("다음 회기 메모", "nextPlan", r.nextPlan || "", { type: "textarea" })}</details><label class="toggle-row"><input type="checkbox" name="hasAssessment" data-toggle="assessment-fields" ${r.assessment ? "checked" : ""}><span>평가값 직접 입력</span></label><fieldset id="assessment-fields" ${r.assessment ? "" : "hidden disabled"}><legend>평가값</legend><p class="footnote">표준 평가 양식이나 자동 점수 계산이 아닙니다. 도구의 적합성과 사용 조건을 확인한 뒤 측정 결과를 입력하세요.</p><div class="form-grid">${field("평가 도구", "tool", a.tool || "", { required: true, max: 80, placeholder: "도구명 직접 입력" })}${field("평가 항목", "item", a.item || "", { required: true, max: 100 })}${field("측정값", "value", a.value ?? "", { required: true, type: "number", step: "any" })}${field("단위", "unit", a.unit || "", { required: true, max: 30 })}</div>${field("측정 조건", "context", a.context || "", { required: true, max: 300, placeholder: "측면, 자세, 도움 수준 등 비교에 필요한 조건" })}</fieldset><label class="toggle-row"><input type="checkbox" name="hasActivity" data-toggle="activity-fields" ${r.activity ? "checked" : ""}><span>목표에 연결된 가정 활동 추가</span></label><fieldset id="activity-fields" ${r.activity ? "" : "hidden disabled"}><legend>가정 활동</legend>${field("활동 이름", "activityTitle", h.title || "", { required: true, max: 100 })}${field("활동 안내", "instruction", h.instruction || "", { required: true, type: "textarea" })}${field("활동 빈도·시간", "frequency", h.frequency || "", { required: true, max: 100, placeholder: "아이와 가족에게 맞게 작성해 주세요" })}${field("유의사항", "caution", h.caution || "", { type: "textarea", max: 500 })}</fieldset>`,
-    "record",
-    { id, childId, appointmentId: selectedAppointment || "" },
-    "기록 저장",
-  );
-  mountAttachments(r.attachments, true);
-  if (context.length) {
-    const notice = document.createElement("details");
-    notice.className = "previous-context";
-    const summary = document.createElement("summary");
-    summary.textContent = "이전 기록과 가정 피드백에서 이어갈 내용";
-    notice.append(summary);
-    for (const note of context) {
-      const para = document.createElement("p");
-      para.className = "footnote";
-      para.textContent = note;
-      notice.append(para);
-    }
-    dialog.querySelector(".dialog-body").prepend(notice);
-  }
+  if (notes.length)
+    dialog
+      .querySelector(".dialog-body")
+      .insertAdjacentHTML(
+        "afterbegin",
+        `<details class="previous-context"><summary>이전 기록과 가정 피드백에서 이어갈 내용</summary>${notes.map((note) => `<p class="footnote">${e(note)}</p>`).join("")}</details>`,
+      );
 }
 function openAction(action, id = "") {
   const p = getView();
+  if (action === "message-review") {
+    const m = conversationView(db, actor(), childId).messages.find(
+      (m) => m.id === id,
+    );
+    if (!m) return;
+    openForm(
+      "다음 회기에 반영",
+      `<blockquote>${e(m.body)}</blockquote>${field("다음 회기에 반영할 내용", "reviewNote", m.reviewNote || "", { type: "textarea", required: true, hint: "내부 메모입니다. 공개 답변은 대화에서 따로 보내세요." })}`,
+      "message-review",
+      { childId, id },
+      "확인하고 저장",
+    );
+    return;
+  }
   if (action === "record") {
     recordForm(id);
     return;
@@ -450,6 +555,9 @@ function openAction(action, id = "") {
       { id, childId },
       r.publicationId ? "수정 내용 공유하기" : "보호자에게 공유",
     );
+    const recipients = document.createElement("p");
+    recipients.textContent = `수신자 ${p.child.guardianIds.length}명 · ${p.child.guardianIds.map((id) => Object.values(ACCOUNTS).find((a) => a.id === id)?.name || `${p.child.name}의 연결된 보호자`).join(", ") || "연결된 보호자 없음"}`;
+    dialog.querySelector(".notice").append(recipients);
     dialog
       .querySelector(".share-preview")
       .insertAdjacentHTML(
@@ -551,9 +659,9 @@ function closeDialog() {
   dialog.close();
   dirty = false;
 }
-async function commit(action, input, entries) {
-  const next = mutate(db, actor(), action, input);
+async function commit(action, input, entries = [], author = actor()) {
   await saveWithMedia(mediaStore, entries, () => {
+    const next = mutate(db, author, action, input);
     persist(storage, next, db.revision);
     db = next;
   });
@@ -563,6 +671,95 @@ document.addEventListener("click", (event) => {
   if (!target) return;
   event.preventDefault();
   const { action, id } = target.dataset;
+  if (chat.sending || chat.editor?.busy) {
+    flash("소식과 첨부를 확인하고 있어요. 완료될 때까지 기다려 주세요.");
+    return;
+  }
+  if (action === "add-assessment") {
+    const rows = dialog.querySelector("#assessment-rows");
+    if (rows.children.length >= 20) {
+      flash("측정값은 20개까지 추가할 수 있어요.");
+      return;
+    }
+    const index = Number(rows.dataset.next || rows.children.length);
+    rows.dataset.next = index + 1;
+    rows.insertAdjacentHTML("beforeend", assessmentRow({}, index));
+    rows.lastElementChild.querySelector("input").focus();
+    dirty = true;
+    return;
+  }
+  if (action === "remove-assessment") {
+    target.closest("[data-assessment]").remove();
+    dirty = true;
+    return;
+  }
+  if (action === "record-template") {
+    if (
+      dirty &&
+      !confirm(
+        "현재 입력 대신 이전 목표와 측정 항목만 가져올까요? 관찰 결과와 측정값은 가져오지 않습니다.",
+      )
+    )
+      return;
+    recordForm(
+      "",
+      dialog._meta.appointmentId,
+      dialog._meta.referenceMessageIds?.[0],
+      id,
+    );
+    dirty = true;
+    return;
+  }
+  if (action === "view-reference") {
+    const m = conversationView(db, actor(), childId).messages.find(
+      (m) => m.id === id,
+    );
+    if (!m) return;
+    const note = target.closest(".reference-note");
+    if (!note.querySelector(".reference-original"))
+      note.insertAdjacentHTML(
+        "beforeend",
+        `<div class="reference-original"><time>${e(m.createdAt)}</time><p>${e(m.body)}</p>${mediaGallery(m.attachments)}</div>`,
+      );
+    dialogMedia.hydrate(dialog);
+    return;
+  }
+  if (action === "start-chat" || action === "open-chat") {
+    if (action === "open-chat") childId = id;
+    chatOpened = action === "open-chat" || account === "guardian";
+    chatTarget = target.dataset.message || "";
+    view = "chat";
+    safeRender();
+    return;
+  }
+  if (action === "chat-list") {
+    chatOpened = false;
+    safeRender();
+    return;
+  }
+  if (action === "reply-message" || action === "cancel-reply") {
+    chat.reply(action === "cancel-reply" ? "" : id);
+    return;
+  }
+  if (action === "jump-message") {
+    chat.jump(id);
+    return;
+  }
+  if (action === "chat-attachments") {
+    const files = document.querySelector("#chat-files");
+    files.open = true;
+    files.querySelector("input[type=file]").click();
+    return;
+  }
+  if (action === "reference-message") {
+    recordForm("", "", id);
+    return;
+  }
+  if (action === "open-draft") {
+    childId = db.records.find((r) => r.id === id).childId;
+    recordForm(id);
+    return;
+  }
   if (action === "reload") {
     location.reload();
     return;
@@ -614,7 +811,13 @@ document.addEventListener("click", (event) => {
 document.addEventListener("change", (event) => {
   const t = event.target;
   if (t.id === "role") {
+    if (chat.sending || chat.editor?.busy) {
+      t.value = account;
+      flash("저장·첨부 확인 후 역할을 전환해 주세요.");
+      return;
+    }
     account = t.value;
+    chatOpened = false;
     view = "home";
     query = "";
     filter = "all";
@@ -668,28 +871,14 @@ dialog.addEventListener("submit", async (event) => {
     return;
   }
   const form = event.target;
-  if (!form.reportValidity()) return;
+  const intent = event.submitter?.value || "saved";
+  if (intent !== "draft" && !form.reportValidity()) return;
   const values = Object.fromEntries(new FormData(form));
   const input = { ...dialog._meta, ...values };
-  if (action === "record") {
-    input.assessment = values.hasAssessment
-      ? {
-          tool: values.tool,
-          item: values.item,
-          value: values.value,
-          unit: values.unit,
-          context: values.context,
-        }
-      : null;
-    input.activity = values.hasActivity
-      ? {
-          title: values.activityTitle,
-          instruction: values.instruction,
-          frequency: values.frequency,
-          caution: values.caution,
-        }
-      : null;
-  }
+  if (action === "record")
+    Object.assign(input, parseRecordForm(form), {
+      status: intent === "draft" ? "draft" : "saved",
+    });
   if (attachmentEditor) input.attachments = attachmentEditor.metadata();
   const entries = attachmentEditor?.entries() || [];
   const controls = [
@@ -706,7 +895,14 @@ dialog.addEventListener("submit", async (event) => {
     dialog.close();
     if (action === "record" || action === "publish" || action === "unpublish")
       view = "records";
-    if (action === "feedback" || action === "review") view = "activities";
+    if (
+      action === "feedback" ||
+      action === "review" ||
+      action === "message-review"
+    ) {
+      view = "chat";
+      chatOpened = true;
+    }
     if (action === "child") {
       childId = db.children.at(-1).id;
       view = "children";
@@ -717,6 +913,8 @@ dialog.addEventListener("submit", async (event) => {
       view = "schedule";
     }
     safeRender();
+    if (action === "record" && intent === "share")
+      openAction("preview", input.id || db.records.at(-1).id);
     flash(
       {
         publish: "보호자 화면에 공유했어요.",
@@ -754,7 +952,13 @@ window.addEventListener("storage", (event) => {
   }
 });
 window.addEventListener("beforeunload", (event) => {
-  if (dirty) {
+  if (
+    dirty ||
+    chat.sending ||
+    chat.editor?.busy ||
+    chat.drafts.failed ||
+    chat.drafts.pendingCount
+  ) {
     event.preventDefault();
     event.returnValue = "";
   }

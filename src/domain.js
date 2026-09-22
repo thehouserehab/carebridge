@@ -1,5 +1,14 @@
 import { THERAPISTS } from "./config.js";
+import { accessibleChildren } from "./access.js";
+export { accessibleChildren } from "./access.js";
 import { normalizeAttachments, attachmentListValid } from "./media-policy.js";
+import {
+  upgradeState,
+  synchronizeEvents,
+  changeConversation,
+  validConversations,
+} from "./conversations.js";
+import { recordFields, validRecordFields } from "./record-fields.js";
 const fail = (message) => {
   throw new Error(message);
 };
@@ -21,14 +30,6 @@ const validDate = (v) => {
   return v;
 };
 const uid = () => globalThis.crypto.randomUUID();
-export function accessibleChildren(db, actor) {
-  return db.children.filter(
-    (c) =>
-      actor.role === "center" ||
-      (actor.role === "therapist" && c.therapistId === actor.id) ||
-      (actor.role === "guardian" && c.guardianIds.includes(actor.id)),
-  );
-}
 function childAccess(db, actor, id, roles) {
   if (!roles.includes(actor.role))
     fail("이 역할에서 사용할 수 없는 작업입니다.");
@@ -116,8 +117,10 @@ export function mutate(
   input,
   now = new Date().toISOString(),
 ) {
-  const next = structuredClone(db);
-  if (action === "child") {
+  const next = structuredClone(upgradeState(db));
+  if (["message", "read", "message-review"].includes(action)) {
+    changeConversation(next, actor, action, input, now);
+  } else if (action === "child") {
     if (actor.role !== "center") fail("센터 화면에서 아동을 등록해 주세요.");
     const age = Number(input.age);
     if (!Number.isInteger(age) || age < 0 || age > 26)
@@ -184,22 +187,7 @@ export function mutate(
         )
       )
         fail("이 일정의 기록이 이미 있습니다. 기존 기록을 수정해 주세요.");
-      let assessment = null;
-      if (input.assessment) {
-        const a = input.assessment;
-        if (
-          String(a.value ?? "").trim() === "" ||
-          !Number.isFinite(Number(a.value))
-        )
-          fail("평가값은 숫자로 입력해 주세요.");
-        assessment = {
-          tool: text(a.tool, "평가 도구", true, 80),
-          item: text(a.item, "평가 항목", true, 100),
-          value: Number(a.value),
-          unit: text(a.unit, "단위", true, 30),
-          context: text(a.context, "측정 조건", true, 300),
-        };
-      }
+      const structured = recordFields(input, old, next, child.id);
       let activity = null;
       if (input.activity)
         activity = {
@@ -213,11 +201,17 @@ export function mutate(
         childId: child.id,
         goalId: input.goalId,
         date: validDate(input.date),
-        title: text(input.title, "기록 제목", true, 100),
+        title: text(
+          input.title ||
+            `${input.date} ${structured.performed.slice(0, 50) || "세션 기록"}`,
+          "기록 제목",
+          true,
+          100,
+        ),
         summary: text(input.summary, "보호자 공유 내용", false),
         privateNote: text(input.privateNote, "내부 메모", false),
         nextPlan: text(input.nextPlan, "다음 회기 메모", false),
-        assessment,
+        ...structured,
         activity,
         attachments: normalizeAttachments(
           input.attachments ?? old?.attachments ?? [],
@@ -226,8 +220,24 @@ export function mutate(
         publicationId: old?.publicationId ?? null,
         updatedAt: now,
       };
-      if (!row.summary && !row.privateNote && !row.assessment)
-        fail("공유 내용, 내부 메모, 평가 중 하나를 작성해 주세요.");
+      if (
+        row.status !== "draft" &&
+        !row.summary &&
+        !row.privateNote &&
+        !row.performed &&
+        !row.response &&
+        !row.nextPlan &&
+        !row.assessments.length &&
+        !(
+          row.observation?.status === "observed" &&
+          Object.entries(row.observation).some(
+            ([key, value]) => key !== "status" && value.trim(),
+          )
+        )
+      )
+        fail(
+          "정식 기록에는 활동·반응·계획이나 관찰 내용을 작성해 주세요. 빈 기록은 초안으로 저장할 수 있어요.",
+        );
       if (old) Object.assign(old, row);
       else next.records.push(row);
     }
@@ -236,6 +246,10 @@ export function mutate(
       if (action === "unpublish") {
         r.publicationId = null;
       } else {
+        if (r.status === "draft")
+          fail("초안을 정식 기록으로 저장한 뒤 공유해 주세요.");
+        if (!child.guardianIds.length)
+          fail("연결된 보호자가 없어 공유할 수 없어요.");
         const summary = text(r.summary, "보호자 공유 내용");
         const id = uid();
         next.publications.push({
@@ -348,13 +362,14 @@ export function mutate(
       else next.appointments.push(row);
     }
   }
+  synchronizeEvents(next);
   next.revision = db.revision + 1;
   return next;
 }
 export function validateState(db) {
   if (
     !db ||
-    db.schema !== 2 ||
+    ![2, 3].includes(db.schema) ||
     !Number.isInteger(db.revision) ||
     db.revision < 0
   )
@@ -474,6 +489,12 @@ export function validateState(db) {
         a.duration <= 180 &&
         ["scheduled", "attended", "absent", "cancelled"].includes(a.status),
     )
+  )
+    return false;
+  if (
+    db.schema === 3 &&
+    (!validConversations(db) ||
+      !db.records.every((r) => validRecordFields(r, db)))
   )
     return false;
   return db.feedback.every(

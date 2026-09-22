@@ -148,7 +148,7 @@ test("평가 숫자·조건·내용 검증을 적용하고 임의 점수를 산�
     mutate(seed(), therapist, "record", { ...record, date: "2026-02-30" }),
   );
   const db = mutate(seed(), therapist, "record", record);
-  assert.deepEqual(db.records.at(-1).assessment, record.assessment);
+  assert.deepEqual(db.records.at(-1).assessments, [record.assessment]);
 });
 test("보호자 관심사와 치료사의 공동 목표 변경이 연결된다", () => {
   let db = mutate(seed(), guardian, "concern", {

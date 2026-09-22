@@ -88,12 +88,12 @@ export class AttachmentEditor {
     root,
     items,
     store,
-    { sharing = false, onChange = () => {} } = {},
+    { sharing = false, onChange = () => {}, pending = [] } = {},
   ) {
     this.root = root;
     this.items = normalizeAttachments(items);
     this.store = store;
-    this.pending = new Map();
+    this.pending = new Map(pending);
     this.view = new MediaView(store);
     this.sharing = sharing;
     this.onChange = onChange;

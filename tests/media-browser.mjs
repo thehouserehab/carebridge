@@ -18,18 +18,49 @@ const root = fileURLToPath(new URL("../test-results/", import.meta.url));
 await mkdir(root, { recursive: true });
 const role = (value) =>
   page.getByLabel("사용자 역할", { exact: true }).selectOption(value);
-const nav = (name) =>
-  page
-    .getByRole("navigation", { name: "주요 메뉴", exact: true })
-    .getByRole("button", { name, exact: true })
+const nav = async (name) => {
+  const isCenter =
+    (await page.getByLabel("사용자 역할", { exact: true }).inputValue()) ===
+    "center";
+  if (name === "가정 활동" || (name === "일정" && !isCenter)) {
+    await nav("아이 정보");
+    await page
+      .getByRole("button", {
+        name: name === "일정" ? "전체 일정" : "가정 활동",
+        exact: true,
+      })
+      .click();
+    return;
+  }
+  const label =
+    { 오늘: "홈", "공유 기록": "기록", "아이·목표": "아이 정보" }[name] ||
+    (name === "아동" && !isCenter ? "아이 정보" : name);
+  await page
+    .getByRole("navigation", {
+      name: page.viewportSize().width <= 640 ? "모바일 메뉴" : "주요 메뉴",
+      exact: true,
+    })
+    .getByRole("button", { name: label, exact: true })
     .click();
-const fill = (name, value) =>
-  page.locator(`#edit-form [name=${name}]`).fill(value);
+};
+async function reveal(locator) {
+  for (const details of await locator.locator("xpath=ancestor::details").all())
+    if ((await details.getAttribute("open")) === null)
+      await details.locator(":scope > summary").click();
+}
+const fill = async (name, value) => {
+  if (["tool", "item", "value", "unit", "context"].includes(name))
+    name = "assessment-0-" + name;
+  const input = page.locator(`#edit-form [name="${name}"]`);
+  await reveal(input);
+  await input.fill(value);
+};
 const save = async () => {
-  await page.locator("#edit-form [type=submit]").click();
+  await page.locator("#edit-form [type=submit]:not([name=intent])").click();
   await page.locator("#dialog").waitFor({ state: "hidden" });
 };
 const choose = async (files) => {
+  await reveal(page.getByLabel("사진·동영상 선택", { exact: true }));
   await page
     .getByLabel("사진·동영상 선택", { exact: true })
     .setInputFiles(files);
@@ -51,7 +82,7 @@ const mediaCount = () =>
     });
   });
 try {
-  await page.goto("http://127.0.0.1:4173/");
+  await page.goto(process.env.APP_URL || "http://127.0.0.1:4173/");
   assert.match(await page.title(), /^Carebridge/);
   const payload = await page.evaluate(async () => {
     const canvas = document.createElement("canvas");
@@ -63,8 +94,10 @@ try {
     const png = await new Promise((resolve) =>
       canvas.toBlob(resolve, "image/png"),
     );
-    const stream = canvas.captureStream(10);
-    const recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
+    const stream = canvas.captureStream(0);
+    const recorder = new MediaRecorder(stream, {
+      mimeType: "video/webm;codecs=vp8",
+    });
     const chunks = [];
     const recorded = new Promise((resolve) => {
       recorder.ondataavailable = (e) => chunks.push(e.data);
@@ -74,7 +107,8 @@ try {
     for (let i = 0; i < 8; i++) {
       ctx.fillStyle = i % 2 ? "#4285ff" : "#75a9ff";
       ctx.fillRect(0, 0, 160, 90);
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      stream.getVideoTracks()[0].requestFrame();
+      await new Promise((resolve) => setTimeout(resolve, 120));
     }
     recorder.stop();
     const video = await recorded;
@@ -94,6 +128,7 @@ try {
     mimeType: "video/webm",
     buffer: Buffer.from(payload.video),
   };
+  await nav("기록");
   await page.getByRole("button", { name: "기록 작성", exact: true }).click();
   await fill("title", "미디어 검증 기록");
   await fill("summary", "가상 관찰 내용");
@@ -125,14 +160,12 @@ try {
   assert.equal(db.records.at(-1).attachments.length, 2);
   assert.equal(await mediaCount(), 2);
   const card = () =>
-    page
-      .locator(".record-card")
-      .filter({
-        has: page.getByRole("heading", {
-          name: "미디어 검증 기록",
-          exact: true,
-        }),
-      });
+    page.locator(".record-card").filter({
+      has: page.getByRole("heading", {
+        name: "미디어 검증 기록",
+        exact: true,
+      }),
+    });
   await page.waitForFunction(
     () => document.querySelector(".record-card video")?.readyState >= 1,
   );
@@ -183,6 +216,7 @@ try {
   await page.reload();
   await feedback.locator("video").waitFor();
   checks.push("보호자 사진/영상 피드백 저장 및 치료사 확인");
+  await nav("기록");
   await page.getByRole("button", { name: "기록 작성", exact: true }).click();
   await fill("title", "실패 후 재시도");
   await fill("summary", "보존 검사");
@@ -224,7 +258,7 @@ try {
       throw new Error("테스트 저장공간 부족");
     };
   });
-  await page.locator("#edit-form [type=submit]").click();
+  await page.locator("#edit-form [type=submit]:not([name=intent])").click();
   await page.locator("#form-error").waitFor();
   assert.match(await page.locator("#form-error").innerText(), /저장공간/);
   assert.equal((await data()).revision, revisionBefore);
@@ -239,9 +273,11 @@ try {
       return window.originalSet.call(this, k, v);
     };
   });
-  await page.locator("#edit-form [type=submit]").click();
+  await page.locator("#edit-form [type=submit]:not([name=intent])").click();
   await page.waitForFunction(
-    () => !document.querySelector("#edit-form [type=submit]").disabled,
+    () =>
+      !document.querySelector("#edit-form [type=submit]:not([name=intent])")
+        .disabled,
   );
   assert.equal(await mediaCount(), countBefore);
   assert.equal((await data()).revision, revisionBefore);
@@ -253,6 +289,7 @@ try {
   checks.push("파일 및 기록 저장 실패 시 입력 유지·새 파일 롤백·재시도");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
+  await nav("기록");
   await page.getByRole("button", { name: "기록 작성", exact: true }).click();
   await choose([photo, video]);
   await page.locator("#dialog .attachment-list").scrollIntoViewIfNeeded();
