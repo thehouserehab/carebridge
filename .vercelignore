@@ -1,0 +1,10 @@
+.git/
+.vercel/
+node_modules/
+dist/
+test-results/
+.env
+.env.*
+docs/product.md
+docs/verification.md
+*.log

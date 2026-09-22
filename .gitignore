@@ -1,0 +1,9 @@
+node_modules/
+dist/
+test-results/
+*.log
+.vercel/
+.env
+.env.*
+docs/product.md
+docs/verification.md

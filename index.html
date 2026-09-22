@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#f6f8fb" />
+    <meta
+      name="description"
+      content="아이의 목표, 센터의 기록, 가정의 경험을 연결하는 로컬 프로토타입"
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>Carebridge · 함께 이어가는 기록</title>
+  </head>
+  <body>
+    <a class="skip" href="#main">본문으로 이동</a>
+    <div id="app">
+      <p class="loading" role="status">아이의 기록을 준비하고 있어요…</p>
+    </div>
+    <dialog id="dialog" aria-labelledby="dialog-title"></dialog>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <noscript>이 프로토타입은 JavaScript를 켜야 사용할 수 있습니다.</noscript>
+    <script type="module" src="/src/app.js"></script>
+  </body>
+</html>
