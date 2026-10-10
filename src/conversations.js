@@ -1,9 +1,22 @@
 import { normalizeAttachments, attachmentListValid } from "./media-policy.js";
-import { accessibleChildren } from "./access.js";
+import { accessibleChildren, canReadMessage } from "./access.js";
+import { messageVersion, messageBodyAt, messageHiddenFor, messageCapabilities, changeTextMessage, validMessageLifecycle } from "./message-lifecycle.js";
+import { freezeMessageReferences, sourceMessageVersion } from "./message-references.js";
+import { messagePreview } from "./message-preview.js";
+import { feedbackVersion, feedbackAt } from "./feedback-history.js";
 
 export function participants(db, childId) {
   const child = db.children.find((c) => c.id === childId);
   return child ? [child.therapistId, ...child.guardianIds] : [];
+}
+function historicalParticipants(db, childId) {
+  const child = db.children.find((c) => c.id === childId);
+  if (!child) return [];
+  return [
+    ...participants(db, childId),
+    ...(child.formerTherapistIds || []),
+    ...(child.formerGuardianIds || []),
+  ];
 }
 export function canConverse(db, actor, childId) {
   return (
@@ -51,6 +64,10 @@ export function upgradeState(source) {
   if (source.schema === 3) return source;
   const db = structuredClone(source);
   db.schema = 3;
+  db.children.forEach((child) => {
+    child.formerTherapistIds = [];
+    child.formerGuardianIds = [];
+  });
   db.conversations = [];
   db.messages = [];
   db.readStates = [];
@@ -75,7 +92,7 @@ function publicationId(db, message) {
   return null;
 }
 export function messageProjection(db, actor, message) {
-  if (!canConverse(db, actor, message.childId))
+  if (!canConverse(db, actor, message.childId) || !canReadMessage(db, actor, message) || messageHiddenFor(message, actor))
     throw new Error("접근할 수 없는 대화입니다.");
   const pubId = publicationId(db, message);
   const archived = !!pubId && !current(db, pubId);
@@ -91,6 +108,9 @@ export function messageProjection(db, actor, message) {
     canReply: !archived,
     attachments: [],
   };
+  if (message.type === "text" && message.deletedAt)
+    return { ...base, authorId: null, body: "삭제된 소식입니다.", hidden: true, deleted: true,
+      canReply: false, version: messageVersion(message), canHide: true };
   if (archived && actor.role === "guardian")
     return { ...base, hidden: true, body: "공유가 종료된 기록입니다." };
   if (message.type === "publication") {
@@ -106,6 +126,7 @@ export function messageProjection(db, actor, message) {
     const f = db.feedback.find((f) => f.id === message.sourceId);
     const feedback = {
       id: f.id,
+      revision: feedbackVersion(f),
       publicationId: f.publicationId,
       result: f.result,
       reaction: f.reaction,
@@ -117,6 +138,8 @@ export function messageProjection(db, actor, message) {
     return {
       ...base,
       feedback,
+      version: feedbackVersion(f),
+      edited: feedbackVersion(f) > 1,
       body: f.reaction,
       attachments: f.attachments || [],
     };
@@ -125,20 +148,41 @@ export function messageProjection(db, actor, message) {
   if (message.replyTo) {
     const original = db.messages.find((m) => m.id === message.replyTo);
     // Only project the direct source; no recursively copied quotations.
-    const p = messageProjection(db, actor, { ...original, replyTo: null });
-    quote = {
+    const p = canReadMessage(db, actor, original) && !messageHiddenFor(original, actor)
+      ? messageProjection(db, actor, { ...original, replyTo: null }) : null;
+    quote = !p ? { id: original.id, body: "열람 범위 밖의 대화입니다.", hidden: true } : {
       id: p.id,
       body: p.body,
       hidden: !!p.hidden,
       authorId: p.authorId,
     };
+    let quoteAttachments = p?.attachments;
+    if (p?.type === "text" && !p.hidden && message.replyVersion) {
+      quote.body = messageBodyAt(original, message.replyVersion);
+      quote.changed = message.replyVersion !== messageVersion(original);
+    }
+    if (p?.type === "feedback" && !p.hidden && message.replyVersion) {
+      const f = db.feedback.find((row) => row.id === original.sourceId);
+      const historical = feedbackAt(f, message.replyVersion);
+      quote.body = historical.reaction;
+      quoteAttachments = historical.attachments;
+      quote.version = message.replyVersion;
+      quote.changed = message.replyVersion !== feedbackVersion(f);
+    }
+    // Use the authorized source and the reply's historical body. File metadata
+    // is immutable on text edits; the preview is not written back to either.
+    quote.preview = messagePreview({ ...p, ...quote, attachments: quoteAttachments });
   }
   return {
     ...base,
     body: message.body,
+    version: messageVersion(message),
+    edited: !!message.editedAt,
+    ...messageCapabilities(message, actor),
     attachments: structuredClone(message.attachments),
     quote,
-    reviewed: !!message.reviewed,
+    reviewed: !!message.reviewed && (message.reviewVersion ?? 1) === messageVersion(message),
+    reviewChanged: !!message.reviewed && (message.reviewVersion ?? 1) !== messageVersion(message),
     reviewNote: actor.role === "therapist" ? message.reviewNote : undefined,
   };
 }
@@ -150,27 +194,38 @@ export function conversationView(db, actor, childId) {
     db.readStates.find(
       (r) => r.conversationId === room.id && r.userId === actor.id,
     )?.sequence || 0;
-  const rows = db.messages.filter((m) => m.conversationId === room.id);
+  const rows = db.messages.filter((m) => m.conversationId === room.id && canReadMessage(db, actor, m) && !messageHiddenFor(m, actor));
   const unread = rows.filter(
-    (m) => m.sequence > lastRead && m.authorId !== actor.id,
+    (m) => !m.deletedAt && m.sequence > lastRead && m.authorId !== actor.id,
   );
-  const others = participants(db, childId).filter((id) => id !== actor.id);
-  const messages = rows.map((m) => ({
-    ...messageProjection(db, actor, m),
-    read:
-      others.length > 0 &&
-      others.every(
-        (id) =>
-          (db.readStates.find(
-            (r) => r.conversationId === room.id && r.userId === id,
-          )?.sequence || 0) >= m.sequence,
-      ),
-  }));
+  const child = db.children.find((c) => c.id === childId);
+  const others = participants(db, childId)
+    .filter((id) => id !== actor.id)
+    .map((id) => ({ id, role: id === child.therapistId ? "therapist" : "guardian" }));
+  const messages = rows.map((m) => {
+    // A newly connected participant cannot acknowledge news outside their
+    // history boundary. Feedback also requires access to its source share.
+    // Self-hiding is not a read receipt, so it does not remove a recipient.
+    const recipients = others.filter((other) => canReadMessage(db, other, m));
+    return {
+      ...messageProjection(db, actor, m),
+      read:
+        recipients.length > 0 &&
+        recipients.every(
+          ({ id }) =>
+            (db.readStates.find(
+              (r) => r.conversationId === room.id && r.userId === id,
+            )?.sequence || 0) >= m.sequence,
+        ),
+    };
+  });
   return {
     ...room,
     messages,
     unread: unread.length,
-    targetId: unread[0]?.id || rows.at(-1)?.id || "",
+    // The list previews the latest projected message. Its click must point to
+    // that same message, not a different (earlier unread) piece of news.
+    targetId: rows.at(-1)?.id || "",
     lastRead,
   };
 }
@@ -191,13 +246,19 @@ export function changeConversation(db, actor, action, input, now) {
   if (!canConverse(db, actor, input.childId))
     throw new Error("접근할 수 없는 대화입니다.");
   const room = db.conversations.find((c) => c.childId === input.childId);
-  const find = (id) => {
+  const find = (id, allowHidden = false) => {
     const row = db.messages.find(
       (m) => m.id === id && m.conversationId === room.id,
     );
-    if (!row) throw new Error("연결할 메시지를 확인해 주세요.");
+    if (!row || !canReadMessage(db, actor, row) || (!allowHidden && messageHiddenFor(row, actor))) throw new Error("연결할 메시지를 확인해 주세요.");
     return row;
   };
+  if (["message-edit", "message-delete"].includes(action)) {
+    const message = find(input.id, action === "message-delete" && input.scope === "self");
+    if (message.type === "text" && !message.deletedAt) freezeMessageReferences(db, message, now);
+    changeTextMessage(db, actor, message, action, input, now);
+    return;
+  }
   if (action === "read") {
     const sequence = input.id ? find(input.id).sequence : 0;
     const old = db.readStates.find(
@@ -216,11 +277,13 @@ export function changeConversation(db, actor, action, input, now) {
     if (actor.role !== "therapist")
       throw new Error("치료사만 반영 메모를 작성할 수 있어요.");
     const m = find(input.id);
-    if (m.type !== "text") throw new Error("일반 메시지에만 사용할 수 있어요.");
+    if (m.type !== "text" || m.deletedAt) throw new Error("삭제되지 않은 일반 소식에만 사용할 수 있어요.");
+    if (input.expectedVersion !== undefined && input.expectedVersion !== messageVersion(m))
+      throw new Error("소식이 변경됐어요. 최신 내용을 확인한 뒤 반영해 주세요.");
     const note = String(input.reviewNote || "").trim();
     if (!note || note.length > 2000)
       throw new Error("반영 메모를 2,000자 이내로 작성해 주세요.");
-    Object.assign(m, { reviewed: true, reviewNote: note, reviewedAt: now });
+    Object.assign(m, { reviewed: true, reviewNote: note, reviewedAt: now, reviewVersion: messageVersion(m) });
     return;
   }
   const id = String(input.clientId || "");
@@ -232,11 +295,13 @@ export function changeConversation(db, actor, action, input, now) {
     (m) => ({ ...m, share: true }),
   );
   if (old) {
+    if (!canReadMessage(db, actor, old)) throw new Error("연결할 메시지를 확인해 주세요.");
     if (
       old.authorId !== actor.id ||
       old.conversationId !== room.id ||
-      old.body !== body ||
+      (old.sentBody ?? old.body) !== body ||
       old.replyTo !== (input.replyTo || null) ||
+      (input.expectedReplyVersion !== undefined && old.replyVersion !== input.expectedReplyVersion) ||
       JSON.stringify(old.attachments) !== JSON.stringify(attachments)
     )
       throw new Error("이미 사용한 발신 ID입니다. 새 메시지로 작성해 주세요.");
@@ -253,6 +318,11 @@ export function changeConversation(db, actor, action, input, now) {
     throw new Error(
       "공유가 종료된 기록에는 새 답변을 보낼 수 없어요. 답변 연결을 해제해 주세요.",
     );
+  const original = input.replyTo ? find(input.replyTo) : null;
+  if (input.expectedReplyVersion !== undefined && !["text", "feedback"].includes(original?.type))
+    throw new Error("답변할 소식 버전을 확인해 주세요.");
+  if (original && input.expectedReplyVersion !== undefined && input.expectedReplyVersion !== sourceMessageVersion(db, original))
+    throw new Error("답변할 소식이 수정됐어요. 최신 내용을 확인한 뒤 답해주세요.");
   db.messages.push({
     id,
     conversationId: room.id,
@@ -262,6 +332,7 @@ export function changeConversation(db, actor, action, input, now) {
     body,
     attachments,
     replyTo: input.replyTo || null,
+    ...(["text", "feedback"].includes(original?.type) ? { replyVersion: sourceMessageVersion(db, original) } : {}),
     createdAt: now,
     sequence: (db.messages.at(-1)?.sequence || 0) + 1,
   });
@@ -286,6 +357,7 @@ export function validConversations(db) {
   )
     return false;
   const ids = new Set();
+  const commandIds = new Set(db.messages.map((m) => m.id));
   let sequence = 0;
   for (const m of db.messages) {
     if (
@@ -294,7 +366,7 @@ export function validConversations(db) {
       ids.has(m.id) ||
       !Number.isInteger(m.sequence) ||
       m.sequence <= sequence ||
-      !participants(db, m.childId).includes(m.authorId) ||
+      !historicalParticipants(db, m.childId).includes(m.authorId) ||
       typeof m.createdAt !== "string" ||
       Number.isNaN(Date.parse(m.createdAt)) ||
       !db.conversations.some(
@@ -317,7 +389,15 @@ export function validConversations(db) {
           ))
       )
         return false;
+      const original = m.replyTo ? db.messages.find((row) => row.id === m.replyTo) : null;
+      if (!validMessageLifecycle(m, historicalParticipants(db, m.childId), commandIds) ||
+          (m.replyVersion !== undefined && (!["text", "feedback"].includes(original?.type) ||
+            m.replyVersion > sourceMessageVersion(db, original) ||
+            (original.type === "text" ? messageBodyAt(original, m.replyVersion) === null :
+              !feedbackAt(db.feedback.find((row) => row.id === original.sourceId), m.replyVersion)))) ||
+          (m.reviewVersion !== undefined && (!m.reviewed || m.reviewVersion > messageVersion(m)))) return false;
     } else if (["publication", "feedback"].includes(m.type)) {
+      if (!validMessageLifecycle(m, [], commandIds)) return false;
       if (
         !db[m.type === "publication" ? "publications" : "feedback"].some(
           (r) => r.id === m.sourceId && r.childId === m.childId,
@@ -340,7 +420,9 @@ export function validConversations(db) {
     const key = `${r.conversationId}/${r.userId}`;
     if (
       !room ||
-      !participants(db, room.childId).includes(r.userId) ||
+      // Persist past read cursors when a relationship ends, just as past
+      // messages are preserved. canConverse still checks current access.
+      !historicalParticipants(db, room.childId).includes(r.userId) ||
       readKeys.has(key) ||
       !Number.isInteger(r.sequence) ||
       r.sequence < 0 ||

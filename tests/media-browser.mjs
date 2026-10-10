@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { mkdir, writeFile } from "node:fs/promises";
+import { syntheticMedia } from "./browser-media.mjs";
 const { chromium } = await import(
   pathToFileURL(process.env.PLAYWRIGHT_MODULE).href
 );
@@ -84,40 +85,7 @@ const mediaCount = () =>
 try {
   await page.goto(process.env.APP_URL || "http://127.0.0.1:4173/");
   assert.match(await page.title(), /^Carebridge/);
-  const payload = await page.evaluate(async () => {
-    const canvas = document.createElement("canvas");
-    canvas.width = 160;
-    canvas.height = 90;
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#4285ff";
-    ctx.fillRect(0, 0, 160, 90);
-    const png = await new Promise((resolve) =>
-      canvas.toBlob(resolve, "image/png"),
-    );
-    const stream = canvas.captureStream(0);
-    const recorder = new MediaRecorder(stream, {
-      mimeType: "video/webm;codecs=vp8",
-    });
-    const chunks = [];
-    const recorded = new Promise((resolve) => {
-      recorder.ondataavailable = (e) => chunks.push(e.data);
-      recorder.onstop = () => resolve(new Blob(chunks, { type: "video/webm" }));
-    });
-    recorder.start();
-    for (let i = 0; i < 8; i++) {
-      ctx.fillStyle = i % 2 ? "#4285ff" : "#75a9ff";
-      ctx.fillRect(0, 0, 160, 90);
-      stream.getVideoTracks()[0].requestFrame();
-      await new Promise((resolve) => setTimeout(resolve, 120));
-    }
-    recorder.stop();
-    const video = await recorded;
-    stream.getTracks().forEach((t) => t.stop());
-    return {
-      png: [...new Uint8Array(await png.arrayBuffer())],
-      video: [...new Uint8Array(await video.arrayBuffer())],
-    };
-  });
+  const payload = await syntheticMedia(page);
   const photo = {
     name: "가상-사진.png",
     mimeType: "image/png",
@@ -177,6 +145,12 @@ try {
   await save();
   await role("guardian");
   await nav("공유 기록");
+  // The gallery hydrates asynchronously from IndexedDB after navigation.
+  const sharedPhoto = card().locator("img");
+  await sharedPhoto.waitFor({ state: "visible" });
+  await sharedPhoto.scrollIntoViewIfNeeded();
+  await sharedPhoto.evaluate((image) => image.decode());
+  assert.ok(await sharedPhoto.evaluate((image) => image.naturalWidth > 0));
   assert.equal(await card().locator("img").count(), 1);
   assert.equal(await card().locator("video").count(), 0);
   checks.push("보호자 공유 미리보기 및 비공유 영상 제외");

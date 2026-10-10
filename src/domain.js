@@ -1,5 +1,5 @@
-import { THERAPISTS } from "./config.js";
-import { accessibleChildren } from "./access.js";
+import { GUARDIANS, THERAPISTS } from "./config.js";
+import { accessibleChildren, canReadMessage, canReadPublication, canReadRecord, validHistoryAccess } from "./access.js";
 export { accessibleChildren } from "./access.js";
 import { normalizeAttachments, attachmentListValid } from "./media-policy.js";
 import {
@@ -8,7 +8,13 @@ import {
   changeConversation,
   validConversations,
 } from "./conversations.js";
-import { recordFields, validRecordFields } from "./record-fields.js";
+import { recordFields, validRecordFields, hasRecordContent, recordActivity } from "./record-fields.js";
+import { recordReferenceSources, validRecordReferenceSources, freezeMessageReferences } from "./message-references.js";
+import { feedbackFields } from "./feedback-fields.js";
+import { feedbackVersion, feedbackSnapshot, validFeedbackHistory } from "./feedback-history.js";
+import { goalFields, appointmentFields, intervalsOverlap } from "./context-fields.js";
+import { childProfileFields, profileToday, validChildAge } from "./profile-fields.js";
+import { saveDemoSelfProfile, validMemberProfiles } from "./member-profiles.js";
 const fail = (message) => {
   throw new Error(message);
 };
@@ -57,6 +63,7 @@ export function project(db, actor, childId) {
           id: c.id,
           name: c.name,
           age: c.age,
+          ...(Object.hasOwn(c, "ageAsOf") ? { ageAsOf: c.ageAsOf } : {}),
           therapistId: c.therapistId,
           color: c.color,
         }
@@ -80,19 +87,20 @@ export function project(db, actor, childId) {
     };
   const publications =
     actor.role === "guardian"
-      ? currentPublications(db, childId)
-      : db.publications.filter((p) => p.childId === childId);
+      ? currentPublications(db, childId).filter((p) => canReadPublication(db, actor, p))
+      : db.publications.filter((p) => p.childId === childId && canReadPublication(db, actor, p));
   const pubIds = new Set(publications.map((p) => p.id));
   return structuredClone({
     ...base,
     goals: db.goals.filter((g) => g.childId === childId),
     records:
       actor.role === "therapist"
-        ? db.records.filter((r) => r.childId === childId)
+        ? db.records.filter((r) => r.childId === childId && canReadRecord(db, actor, r))
         : [],
     publications,
     feedback: db.feedback
-      .filter((f) => pubIds.has(f.publicationId))
+      .filter((f) => pubIds.has(f.publicationId) && (db.schema !== 3 || canReadMessage(db, actor,
+        db.messages?.find((m) => m.type === "feedback" && m.sourceId === f.id))))
       .map((f) =>
         actor.role === "guardian"
           ? {
@@ -104,6 +112,7 @@ export function project(db, actor, childId) {
               reaction: f.reaction,
               difficulty: f.difficulty,
               reviewed: f.reviewed,
+              version: feedbackVersion(f),
               attachments: f.attachments ?? [],
             }
           : f,
@@ -118,13 +127,13 @@ export function mutate(
   now = new Date().toISOString(),
 ) {
   const next = structuredClone(upgradeState(db));
-  if (["message", "read", "message-review"].includes(action)) {
+  if (["message", "read", "message-review", "message-edit", "message-delete"].includes(action)) {
     changeConversation(next, actor, action, input, now);
+  } else if (action === "member-profile") {
+    saveDemoSelfProfile(next, actor, input);
   } else if (action === "child") {
     if (actor.role !== "center") fail("센터 화면에서 아동을 등록해 주세요.");
-    const age = Number(input.age);
-    if (!Number.isInteger(age) || age < 0 || age > 26)
-      fail("연령은 0~26세로 입력해 주세요.");
+    const content = childProfileFields({ name: input.name, age: input.age, ageAsOf: input.ageAsOf }, { today: profileToday(new Date(now)) });
     oneOf(
       input.therapistId,
       THERAPISTS.map((t) => t.id),
@@ -132,8 +141,7 @@ export function mutate(
     );
     next.children.push({
       id: uid(),
-      name: text(input.name, "이름", true, 30),
-      age,
+      ...content,
       therapistId: input.therapistId,
       guardianIds: [],
       concern: "",
@@ -142,6 +150,7 @@ export function mutate(
   } else {
     const roles = {
       concern: ["guardian"],
+      "child-profile": ["center"],
       goal: ["therapist"],
       record: ["therapist"],
       publish: ["therapist"],
@@ -149,9 +158,78 @@ export function mutate(
       feedback: ["guardian"],
       review: ["therapist"],
       appointment: ["therapist", "center"],
+      relationships: ["center"],
     };
     if (!roles[action]) fail("알 수 없는 작업입니다.");
     const child = childAccess(next, actor, input.childId, roles[action]);
+    if (action === "child-profile") {
+      if (Object.keys(input).some((key) => !["childId", "name", "age", "ageAsOf"].includes(key)))
+        fail("기본정보에는 이름·연령·기준일만 저장할 수 있어요.");
+      const content = { name: input.name, age: input.age, ageAsOf: input.ageAsOf };
+      const keepLegacyAge = !Object.hasOwn(child, "ageAsOf") && content.age === child.age && content.ageAsOf == null;
+      const normalized = childProfileFields(keepLegacyAge ? { name: content.name } : content, { today: profileToday(new Date(now)) });
+      if (keepLegacyAge) child.name = normalized.name;
+      else Object.assign(child, normalized);
+    }
+    if (action === "relationships") {
+      const therapistId = oneOf(
+        input.therapistId,
+        THERAPISTS.map((t) => t.id),
+        "담당 치료사",
+      );
+      const guardianIds = Array.isArray(input.guardianIds)
+        ? [...new Set(input.guardianIds.map((id) => String(id)))]
+        : fail("보호자 연결을 확인해 주세요.");
+      if (
+        guardianIds.some((id) => !GUARDIANS.some((guardian) => guardian.id === id))
+      )
+        fail("보호자 연결을 확인해 주세요.");
+      const changed =
+        child.therapistId !== therapistId ||
+        JSON.stringify([...child.guardianIds].sort()) !==
+          JSON.stringify([...guardianIds].sort());
+      if (changed && input.historyConfirmed !== "on" && input.historyConfirmed !== true)
+        fail("관계 변경 후 기존 기록과 대화의 열람 범위를 확인해 주세요.");
+      const choices = input.historyChoices ?? {};
+      if (!choices || typeof choices !== "object" || Array.isArray(choices) ||
+          Object.keys(choices).some((id) => ![therapistId, ...guardianIds].includes(id)) ||
+          Object.values(choices).some((choice) => !["default", "all"].includes(choice)))
+        fail("열람 범위를 확인해 주세요.");
+      if (Object.values(choices).includes("all") && input.pastHistoryConfirmed !== true)
+        fail("과거 기록과 대화를 추가 공개할 구성원을 별도로 확인해 주세요.");
+      if (Object.values(choices).includes("all") && input.historyConfirmed !== true && input.historyConfirmed !== "on")
+        fail("관계 변경 후 기존 기록과 대화의 열람 범위를 확인해 주세요.");
+      const previousIds = [child.therapistId, ...child.guardianIds];
+      const entries = new Map((child.historyAccess ?? []).map((entry) => [entry.userId, entry]));
+      for (const userId of [therapistId, ...guardianIds]) {
+        const all = Object.hasOwn(choices, userId) && choices[userId] === "all";
+        const previous = entries.get(userId);
+        const newAccess = !previousIds.includes(userId);
+        const expanded = all && previous && (previous.firstSequence > 1 || previous.firstRecordRevision > 0);
+        if (newAccess || expanded) {
+          entries.set(userId, { userId,
+            firstSequence: all ? 1 : (next.messages.at(-1)?.sequence ?? 0) + 1,
+            firstRecordRevision: all ? 0 : db.revision + 1 });
+          next.readStates = next.readStates.filter((r) =>
+            r.userId !== userId || r.conversationId !== next.conversations.find((c) => c.childId === child.id).id);
+        }
+      }
+      if (entries.size) child.historyAccess = [...entries.values()];
+      child.formerTherapistIds = [
+        ...new Set([
+          ...(child.formerTherapistIds || []),
+          ...(child.therapistId !== therapistId ? [child.therapistId] : []),
+        ]),
+      ];
+      child.formerGuardianIds = [
+        ...new Set([
+          ...(child.formerGuardianIds || []),
+          ...child.guardianIds.filter((id) => !guardianIds.includes(id)),
+        ]),
+      ];
+      child.therapistId = therapistId;
+      child.guardianIds = guardianIds;
+    }
     if (action === "concern")
       child.concern = text(input.concern, "관심사", false, 1000);
     if (action === "goal") {
@@ -161,13 +239,7 @@ export function mutate(
       const goal = {
         id: old?.id ?? uid(),
         childId: child.id,
-        title: text(input.title, "목표", true, 100),
-        description: text(input.description, "설명", false),
-        status: oneOf(
-          input.status ?? "active",
-          ["active", "achieved", "paused"],
-          "목표 상태",
-        ),
+        ...goalFields(input),
         updatedAt: now,
       };
       if (old) Object.assign(old, goal);
@@ -180,6 +252,7 @@ export function mutate(
       const old = input.id
         ? linked(next, "records", input.id, child.id, "기록")
         : null;
+      if (old && !canReadRecord(next, actor, old)) fail("열람 범위 밖의 기록입니다.");
       if (
         input.appointmentId &&
         next.records.some(
@@ -188,18 +261,16 @@ export function mutate(
       )
         fail("이 일정의 기록이 이미 있습니다. 기존 기록을 수정해 주세요.");
       const structured = recordFields(input, old, next, child.id);
-      let activity = null;
-      if (input.activity)
-        activity = {
-          title: text(input.activity.title, "활동 이름", true, 100),
-          instruction: text(input.activity.instruction, "활동 안내"),
-          frequency: text(input.activity.frequency, "활동 빈도", true, 100),
-          caution: text(input.activity.caution, "유의사항", false, 500),
-        };
+      if (structured.referenceMessageIds.some((id) => !canReadMessage(next, actor, next.messages.find((m) => m.id === id))))
+        fail("열람 범위 밖의 대화는 참고할 수 없어요.");
+      const activity = recordActivity(input.activity, structured.status);
+      const referenceSources = recordReferenceSources(next, actor, structured.referenceMessageIds, old,
+        input.expectedReferenceVersions, now);
       const row = {
         id: old?.id ?? uid(),
         childId: child.id,
         goalId: input.goalId,
+        createdRevision: old?.createdRevision ?? (old ? 0 : db.revision + 1),
         date: validDate(input.date),
         title: text(
           input.title ||
@@ -212,6 +283,7 @@ export function mutate(
         privateNote: text(input.privateNote, "내부 메모", false),
         nextPlan: text(input.nextPlan, "다음 회기 메모", false),
         ...structured,
+        referenceSources,
         activity,
         attachments: normalizeAttachments(
           input.attachments ?? old?.attachments ?? [],
@@ -220,21 +292,7 @@ export function mutate(
         publicationId: old?.publicationId ?? null,
         updatedAt: now,
       };
-      if (
-        row.status !== "draft" &&
-        !row.summary &&
-        !row.privateNote &&
-        !row.performed &&
-        !row.response &&
-        !row.nextPlan &&
-        !row.assessments.length &&
-        !(
-          row.observation?.status === "observed" &&
-          Object.entries(row.observation).some(
-            ([key, value]) => key !== "status" && value.trim(),
-          )
-        )
-      )
+      if (row.status !== "draft" && !hasRecordContent(row))
         fail(
           "정식 기록에는 활동·반응·계획이나 관찰 내용을 작성해 주세요. 빈 기록은 초안으로 저장할 수 있어요.",
         );
@@ -243,6 +301,7 @@ export function mutate(
     }
     if (action === "publish" || action === "unpublish") {
       const r = linked(next, "records", input.id, child.id, "기록");
+      if (!canReadRecord(next, actor, r)) fail("열람 범위 밖의 기록입니다.");
       if (action === "unpublish") {
         r.publicationId = null;
       } else {
@@ -278,6 +337,7 @@ export function mutate(
         "공유 기록",
       );
       if (
+        !canReadPublication(next, actor, pub) ||
         !currentPublications(next, child.id).some((p) => p.id === pub.id) ||
         !pub.activity
       )
@@ -285,21 +345,19 @@ export function mutate(
       const old = input.id
         ? linked(next, "feedback", input.id, child.id, "피드백")
         : null;
+      if (old && !canReadMessage(next, actor, next.messages.find((m) => m.type === "feedback" && m.sourceId === old.id)))
+        fail("열람 범위 밖의 피드백입니다.");
       if (old && (old.publicationId !== pub.id || old.authorId !== actor.id))
         fail("수정할 수 없는 피드백입니다.");
+      if (old && input.expectedVersion !== undefined && input.expectedVersion !== feedbackVersion(old))
+        fail("활동 경험이 수정됐어요. 최신 내용을 확인한 뒤 다시 저장해 주세요.");
+      if (old && Date.parse(now) < Date.parse(old.updatedAt)) fail("변경 시각을 확인해 주세요.");
       const row = {
         id: old?.id ?? uid(),
         childId: child.id,
         publicationId: pub.id,
         authorId: actor.id,
-        date: validDate(input.date),
-        result: oneOf(
-          input.result,
-          ["done", "partial", "skipped"],
-          "수행 상태",
-        ),
-        reaction: text(input.reaction, "아이 반응", true, 1000),
-        difficulty: text(input.difficulty, "어려움", false, 1000),
+        ...feedbackFields(input),
         reviewed: false,
         reviewNote: "",
         attachments: normalizeAttachments(
@@ -307,11 +365,20 @@ export function mutate(
         ).map((file) => ({ ...file, share: true })),
         updatedAt: now,
       };
-      if (old) Object.assign(old, row);
+      if (old) {
+        freezeMessageReferences(next, next.messages.find((m) => m.type === "feedback" && m.sourceId === old.id), now);
+        const history = [...(old.history ?? []), feedbackSnapshot(old)];
+        Object.assign(old, row, { history });
+        delete old.reviewedAt;
+      }
       else next.feedback.push(row);
     }
     if (action === "review") {
       const f = linked(next, "feedback", input.id, child.id, "피드백");
+      if (!canReadMessage(next, actor, next.messages.find((m) => m.type === "feedback" && m.sourceId === f.id)))
+        fail("열람 범위 밖의 피드백입니다.");
+      if (input.expectedVersion !== undefined && input.expectedVersion !== feedbackVersion(f))
+        fail("활동 경험이 수정됐어요. 최신 내용을 확인한 뒤 반영해 주세요.");
       f.reviewed = true;
       f.reviewNote = text(input.reviewNote, "다음 회기 반영 메모", true);
       f.reviewedAt = now;
@@ -320,28 +387,11 @@ export function mutate(
       const old = input.id
         ? linked(next, "appointments", input.id, child.id, "일정")
         : null;
-      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(input.time))
-        fail("시간을 확인해 주세요.");
-      const duration = Number(input.duration);
-      if (!Number.isInteger(duration) || duration < 10 || duration > 180)
-        fail("진행 시간은 10~180분으로 입력해 주세요.");
       const row = {
         id: old?.id ?? uid(),
         childId: child.id,
-        date: validDate(input.date),
-        time: input.time,
-        duration,
-        title: text(input.title, "일정 이름", true, 100),
-        room: text(input.room, "장소", true, 60),
-        status: oneOf(
-          input.status ?? "scheduled",
-          ["scheduled", "attended", "absent", "cancelled"],
-          "일정 상태",
-        ),
+        ...appointmentFields(input),
       };
-      const mins = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3));
-      if (mins(row.time) + duration > 1440)
-        fail("일정은 같은 날 안에 끝나야 합니다.");
       if (
         row.status !== "cancelled" &&
         next.appointments.some(
@@ -353,8 +403,7 @@ export function mutate(
               a.room === row.room ||
               next.children.find((c) => c.id === a.childId)?.therapistId ===
                 child.therapistId) &&
-            mins(a.time) < mins(row.time) + duration &&
-            mins(row.time) < mins(a.time) + a.duration,
+            intervalsOverlap(a, row),
         )
       )
         fail("아동·담당 치료사·장소의 다른 일정과 시간이 겹칩니다.");
@@ -374,6 +423,7 @@ export function validateState(db) {
     db.revision < 0
   )
     return false;
+  if (!validMemberProfiles(db)) return false;
   const keys = [
     "children",
     "goals",
@@ -416,15 +466,14 @@ export function validateState(db) {
         strings(c, ["name", "therapistId", "concern", "color"]) &&
         Array.isArray(c.guardianIds) &&
         c.guardianIds.every((x) => typeof x === "string") &&
-        Number.isInteger(c.age) &&
-        c.age >= 0 &&
-        c.age <= 26 &&
+        validChildAge(c) &&
         THERAPISTS.some((t) => t.id === c.therapistId),
     )
   )
     return false;
   if (!keys.slice(1).every((k) => db[k].every((x) => childIds.has(x.childId))))
     return false;
+  if (!validHistoryAccess(db)) return false;
   if (
     !db.goals.every(
       (g) =>
@@ -444,6 +493,8 @@ export function validateState(db) {
           "updatedAt",
           "appointmentId",
         ]) &&
+        (r.createdRevision === undefined || (Number.isSafeInteger(r.createdRevision) &&
+          r.createdRevision >= 0 && r.createdRevision <= db.revision)) &&
         dateOK(r.date) &&
         activityOK(r.activity) &&
         assessmentOK(r.assessment) &&
@@ -494,7 +545,7 @@ export function validateState(db) {
   if (
     db.schema === 3 &&
     (!validConversations(db) ||
-      !db.records.every((r) => validRecordFields(r, db)))
+      !db.records.every((r) => validRecordFields(r, db) && validRecordReferenceSources(r, db)))
   )
     return false;
   return db.feedback.every(
@@ -508,6 +559,7 @@ export function validateState(db) {
       ]) &&
       dateOK(f.date) &&
       typeof f.reviewed === "boolean" &&
+      validFeedbackHistory(f) &&
       attachmentListValid(f.attachments ?? []) &&
       ["done", "partial", "skipped"].includes(f.result) &&
       db.publications.some(

@@ -7,6 +7,7 @@ import {
   inspectFile,
   normalizeAttachments,
   MEDIA_LIMITS,
+  matchesMediaSignature,
 } from "../src/media-policy.js";
 import { saveWithMedia } from "../src/media-store.js";
 const photo = {
@@ -31,6 +32,23 @@ const input = {
   summary: "가상 관찰",
   attachments: [photo, video],
 };
+test("사진·영상 공통 시그니처 규칙은 6개 형식과 위조 헤더를 구분한다", () => {
+  const ascii = (value) => new TextEncoder().encode(value);
+  const samples = {
+    "image/jpeg": new Uint8Array([255,216,255]),
+    "image/png": new Uint8Array([137,80,78,71,13,10,26,10]),
+    "image/gif": ascii("GIF89a"),
+    "image/webp": ascii("RIFF0000WEBP"),
+    "video/mp4": ascii("0000ftypisom"),
+    "video/webm": new Uint8Array([26,69,223,163]),
+  };
+  for (const [type, bytes] of Object.entries(samples)) {
+    assert.equal(matchesMediaSignature(type,bytes),true);
+    assert.equal(matchesMediaSignature(type,new Uint8Array()),false);
+    assert.equal(matchesMediaSignature(type,ascii("not media")),false);
+  }
+  assert.equal(matchesMediaSignature("image/svg+xml",ascii("<svg/>")),false);
+});
 test("첨부 공유는 선택한 파일만 포함하며 초안 제거 후에도 공유본을 보존한다", () => {
   let db = mutate(seed(), ACCOUNTS.therapist, "record", input);
   const id = db.records.at(-1).id;

@@ -332,11 +332,18 @@ main {
   align-items: center;
   margin-bottom: 24px;
   gap: 12px;
+  min-width: 0;
 }
 .child-select {
   display: flex;
   align-items: center;
   gap: 9px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.child-select label {
+  min-width: 0;
+  flex: 0 1 270px;
 }
 .child-select select {
   font-weight: 650;
@@ -345,6 +352,11 @@ main {
   padding: 5px 0;
   font-size: 14px;
   min-height: 36px;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .context-meta {
   font-size: 11px;
@@ -471,6 +483,10 @@ main {
   display: grid;
   grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr);
   gap: 24px;
+}
+.content-grid > *,
+.children-grid > * {
+  min-width: 0;
 }
 .panel {
   border: 1px solid var(--line);
@@ -783,6 +799,7 @@ summary svg {
 .comparison {
   padding: 14px 0;
   border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
 }
 .comparison strong {
   font-size: 13px;
@@ -795,10 +812,14 @@ summary svg {
   margin: 5px 0 10px;
 }
 .comparison > div {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
   font-size: 12px;
   padding: 8px 0;
+}
+.comparison > div b {
+  text-align: right;
 }
 .comparison > div span {
   color: var(--muted);
@@ -855,6 +876,8 @@ summary svg {
 }
 .child-row > span:nth-child(2) {
   flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .child-row strong {
   font-size: 13px;
@@ -877,6 +900,7 @@ summary svg {
 }
 .profile-header > div {
   flex: 1;
+  min-width: 0;
 }
 .profile-header p {
   font-size: 11px;
@@ -939,6 +963,7 @@ summary svg {
 .feedback-card {
   padding: 20px 0;
   border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
 }
 .feedback-card:first-of-type {
   border-top: 0;
@@ -1043,6 +1068,7 @@ dialog {
   width: min(640px, calc(100vw - 32px));
   max-height: 90dvh;
   color: #243044;
+  overflow-wrap: anywhere;
   box-shadow: 0 28px 100px #0f274a29;
 }
 dialog::backdrop {
@@ -1053,8 +1079,15 @@ dialog::backdrop {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 24px 28px 18px;
   border-bottom: 1px solid var(--line);
+}
+.dialog-header > div {
+  min-width: 0;
+}
+.dialog-header > .button {
+  flex-shrink: 0;
 }
 .dialog-header h2 {
   font-size: 22px;
@@ -1298,7 +1331,7 @@ fieldset > .footnote {
 @media (max-width: 900px) {
   .content-grid,
   .children-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .hero-art {
     display: none;
@@ -1329,6 +1362,18 @@ fieldset > .footnote {
   }
 }
 @media (max-width: 640px) {
+  .child-select {
+    max-width: calc(100% - 92px);
+  }
+
+  .child-select label {
+    flex: 1 1 auto;
+  }
+
+  .demo-note {
+    flex: 0 0 80px;
+  }
+
   .sidebar {
     display: none;
   }
@@ -1465,10 +1510,10 @@ fieldset > .footnote {
     font-size: 15px;
   }
   .row-main strong {
-    font-size: 12px;
+    font-size: 13px;
   }
   .row-main span {
-    font-size: 9px;
+    font-size: 11px;
   }
   .row-actions {
     margin-left: auto;
@@ -1651,6 +1696,56 @@ p {
   * {
     transition: none !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/* Narrow layouts keep the content column readable before action controls. */
+@media (max-width: 640px) {
+  .form-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .appointment-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: start;
+    column-gap: 10px;
+    row-gap: 4px;
+  }
+
+  .appointment-row .time {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+
+  .appointment-row .row-main {
+    grid-column: 2 / -1;
+    grid-row: 1;
+  }
+
+  .appointment-row > .badge {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: start;
+  }
+
+  .appointment-row .row-actions {
+    grid-column: 3;
+    grid-row: 2;
+    align-self: center;
+    margin-left: 0;
+  }
+
+  .profile-header h2,
+  .conversation-summary strong,
+  .chat-header h2 {
+    overflow-wrap: anywhere;
+  }
+
+  .profile-facts {
+    gap: 24px;
+    flex-wrap: wrap;
   }
 }
 /* Local attachment previews: constrained media, readable names, large controls. */

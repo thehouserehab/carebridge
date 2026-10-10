@@ -176,6 +176,7 @@ test("새 아동과 일정, 출결 변경 및 시간 충돌을 검증한다", ()
   let db = mutate(seed(), center, "child", {
     name: "가상 별",
     age: 6,
+    ageAsOf: "2026-01-01",
     therapistId: "t1",
   });
   const c = db.children.at(-1);
@@ -205,6 +206,46 @@ test("새 아동과 일정, 출결 변경 및 시간 충돌을 검증한다", ()
     mutate(db, center, "appointment", { ...appt, time: "25:00" }),
   );
   assert.throws(() => mutate(db, guardian, "appointment", appt));
+});
+test("센터 담당 관계 변경은 기존 기록 열람 확인을 요구하고 이전 참여자의 메시지를 보존한다", () => {
+  let db = mutate(seed(), therapist, "message", {
+    childId: "c1",
+    clientId: "relationship-history-message",
+    body: "기존 담당자가 남긴 가상 소식",
+  });
+  assert.throws(
+    () =>
+      mutate(db, center, "relationships", {
+        childId: "c1",
+        therapistId: "t2",
+        guardianIds: ["p2"],
+      }),
+    /열람 범위/,
+  );
+  db = mutate(db, center, "relationships", {
+    childId: "c1",
+    therapistId: "t2",
+    guardianIds: ["p2"],
+    historyConfirmed: true,
+  });
+  assert.equal(db.children.find((child) => child.id === "c1").therapistId, "t2");
+  assert.deepEqual(db.children.find((child) => child.id === "c1").guardianIds, ["p2"]);
+  assert.deepEqual(
+    db.children.find((child) => child.id === "c1").formerGuardianIds,
+    ["p1"],
+  );
+  assert.deepEqual(
+    db.children.find((child) => child.id === "c1").formerTherapistIds,
+    ["t1"],
+  );
+  assert.equal(accessibleChildren(db, guardian).some((child) => child.id === "c1"), false);
+  const replacementGuardianChildren = accessibleChildren(db, {
+    id: "p2",
+    role: "guardian",
+  });
+  assert.equal(replacementGuardianChildren.some((child) => child.id === "c1"), true);
+  assert.equal(replacementGuardianChildren.some((child) => child.id === "c3"), false);
+  assert.equal(validateState(db), true);
 });
 function memory() {
   let raw = null;

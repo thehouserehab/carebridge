@@ -8,7 +8,7 @@ import {
   conversationView,
   conversationList,
 } from "../src/conversations.js";
-import { load, BACKUP_KEY } from "../src/repository.js";
+import { load, persist, BACKUP_KEY } from "../src/repository.js";
 const t = ACCOUNTS.therapist,
   p = ACCOUNTS.guardian;
 const start = () => upgradeState(seed());
@@ -63,6 +63,72 @@ test("전송 재시도는 같은 ID로 한 번만 저장하고 충돌·다른 �
   );
   assert.throws(() => send(db, p, "접근 불가", { childId: "c2" }));
   assert.equal(validateState(db), true);
+});
+test("홈의 최신 소식과 이동 대상이 일치하며 미확인 수·정렬·권한은 유지한다", () => {
+  let db = send(start(), p, "먼저 도착한 가상 소식");
+  const firstId = db.messages.at(-1).id;
+  db = send(db, p, "가장 최근의 가상 소식");
+  const latestId = db.messages.at(-1).id;
+  db = send(db, { id: "p2", role: "guardian" }, "다른 아이의 가상 소식", { childId: "c2" });
+  const snapshot = structuredClone(db);
+  let rooms = conversationList(db, t);
+  assert.deepEqual(rooms.map((r) => r.childId), ["c2", "c1"]);
+  let row = rooms.find((r) => r.childId === "c1");
+  assert.equal(row.unread, 2);
+  assert.equal(row.latest.body, "가장 최근의 가상 소식");
+  assert.equal(row.targetId, latestId);
+  assert.notEqual(row.targetId, firstId);
+  assert.deepEqual(db, snapshot, "홈 조회만으로 열람 상태를 바꾸지 않는다");
+  db = send(db, t, "치료사가 마지막으로 보낸 가상 답변");
+  row = conversationList(db, t).find((r) => r.childId === "c1");
+  assert.equal(row.unread, 2, "자신의 발신은 미확인 수에 포함하지 않는다");
+  assert.equal(row.latest.authorId, t.id);
+  assert.equal(row.targetId, row.latest.id);
+  db = mutate(db, t, "read", { childId: "c1", id: row.targetId });
+  assert.equal(conversationView(db, t, "c1").unread, 0);
+  assert.equal(conversationView(db, t, "c2").unread, 1);
+  assert.equal(db.messages.find((m) => m.id === latestId).reviewed, undefined);
+  assert.equal(db.readStates.some((r) => r.userId === p.id), false);
+  assert.equal(conversationList(db, p).length, 1);
+  assert.equal(conversationList(db, ACCOUNTS.center).length, 0);
+  assert.equal(validateState(db), true);
+});
+test("열람 이력이 있는 담당자·보호자를 변경해도 저장·복원과 과거 이력을 보존하고 새 접근은 차단한다", () => {
+  let db = send(start(), p, "가상 과거 보호자 소식");
+  const messageId = db.messages.at(-1).id;
+  db = mutate(db, t, "read", { childId: "c1", id: messageId });
+  db = mutate(db, p, "read", { childId: "c1", id: "publication-pub1" });
+  const previous = structuredClone(db);
+  db = mutate(db, ACCOUNTS.center, "relationships", {
+    childId: "c1", therapistId: "t2", guardianIds: ["p2"], historyConfirmed: true,
+  });
+  assert.equal(validateState(db), true);
+  for (const key of ["readStates", "messages", "records", "publications", "feedback"])
+    assert.deepEqual(db[key], previous[key]);
+  const map = new Map([[STORAGE_KEY, JSON.stringify(previous)]]);
+  const storage = { getItem: (key) => map.get(key) ?? null, setItem: (key, value) => map.set(key, value) };
+  persist(storage, db, previous.revision);
+  assert.deepEqual(load(storage).db, db);
+  for (const former of [t, p]) {
+    assert.throws(() => conversationView(db, former, "c1"));
+    assert.throws(() => send(db, former, "가상 연결 해제 후 발신"));
+    assert.throws(() => mutate(db, former, "read", { childId: "c1", id: messageId }));
+    assert.equal(conversationList(db, former).some((room) => room.childId === "c1"), false);
+  }
+  assert.equal(conversationView(db, { id: "t2", role: "therapist" }, "c1").lastRead, 0);
+  assert.equal(conversationView(db, { id: "p2", role: "guardian" }, "c1").lastRead, 0);
+});
+test("과거 열람 위치 허용은 무관한 사용자·센터·다른 방 위치·중복·잘못된 순서를 허용하지 않는다", () => {
+  let db = send(start(), p, "가상 열람 위치");
+  db = mutate(db, t, "read", { childId: "c1", id: db.messages.at(-1).id });
+  db = mutate(db, ACCOUNTS.center, "relationships", { childId: "c1", therapistId: "t2", guardianIds: ["p2"], historyConfirmed: true });
+  assert.equal(validateState(db), true);
+  for (const patch of [{ userId: "m1" }, { userId: "unrelated-user" }, { conversationId: "room-c2" }, { sequence: -1 }, { sequence: 0.5 }, { sequence: 999999 }]) {
+    const invalid = structuredClone(db); Object.assign(invalid.readStates[0], patch);
+    assert.equal(validateState(invalid), false);
+  }
+  const duplicate = structuredClone(db); duplicate.readStates.push(structuredClone(duplicate.readStates[0]));
+  assert.equal(validateState(duplicate), false);
 });
 test("재공유·철회 후 기존 답변 연결과 독립 메시지는 보존하고 공유 내용은 가린다", () => {
   let db = send(start(), p, "이 기록 질문", { replyTo: "publication-pub1" });
@@ -177,7 +243,7 @@ test("빈 초안·기본3항목·복수 평가·대화 참고 저장과 공유 �
   );
   assert.equal(db.records.at(-1).referenceMessageIds[0], reference);
   assert.throws(() =>
-    mutate(db, t, "record", { ...blank, assessments: [{ ...a, value: "" }] }),
+    mutate(db, t, "record", { ...blank, status: "saved", assessments: [{ ...a, value: "" }] }),
   );
   assert.throws(() =>
     mutate(db, t, "record", {

@@ -1,0 +1,115 @@
+import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
+import { pathToFileURL, fileURLToPath } from "node:url";
+
+const { chromium } = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
+const browser = await chromium.connectOverCDP(process.env.CDP_URL);
+const context = await browser.newContext({ locale: "ko-KR" });
+const page = await context.newPage();
+page.setDefaultTimeout(7000);
+const root = fileURLToPath(new URL("../test-results/", import.meta.url));
+await mkdir(root, { recursive: true });
+const errors = [];
+const runId = crypto.randomUUID(), checks = [], unexpectedRequests = [];
+const base = new URL(process.env.APP_URL || "http://127.0.0.1:4173");
+assert.ok(["127.0.0.1","localhost","[::1]"].includes(base.hostname));
+page.on("request", (request) => { const url = new URL(request.url());
+  if (url.origin !== base.origin || url.pathname.startsWith("/api/")) unexpectedRequests.push(request.url()); });
+let failure = null;
+page.on("pageerror", (error) => errors.push(error.message));
+page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+const storage = () => page.evaluate(() => JSON.parse(localStorage.getItem("child-development-demo-v2")));
+const nav = (name) => page.getByRole("navigation", { name: page.viewportSize().width <= 640 ? "모바일 메뉴" : "주요 메뉴", exact: true }).getByRole("button", { name, exact: true }).click();
+try {
+  await page.goto(process.env.APP_URL || "http://127.0.0.1:4173");
+  await page.getByRole("heading", { name: "소식에서 다음 만남으로" }).waitFor();
+  for (const width of [320, 390, 1440]) {
+    await page.evaluate(() => {
+      localStorage.clear();
+      sessionStorage.clear();
+    });
+    await page.reload();
+    await page.getByRole("heading", { name: "소식에서 다음 만남으로" }).waitFor();
+    await page.setViewportSize({ width, height: 900 });
+    await page.getByLabel("사용자 역할", { exact: true }).selectOption("center");
+    await nav("아동");
+    await page.getByRole("button", { name: "담당 관계 관리", exact: true }).click();
+    await page.getByRole("heading", { name: "담당 관계 관리", exact: true }).waitFor();
+    assert.equal(await page.locator('[name="therapistHistory"]').inputValue(),"default");
+    assert.equal(await page.locator('[name="history-p2"]').inputValue(),"default");
+    assert.equal(await page.locator('[name="pastHistoryConfirmed"]').isChecked(),false);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),true);
+    await page.screenshot({path:`${root}/relationships-policy-${width}.png`,fullPage:true});
+    assert.equal(await page.locator('[name="guardianIds"][value="p1"]').isChecked(), true);
+    await page.locator('[name="therapistId"]').selectOption("t2");
+    await page.locator('[name="guardianIds"][value="p1"]').uncheck();
+    await page.locator('[name="guardianIds"][value="p2"]').check();
+    await page.getByRole("button", { name: "관계 저장", exact: true }).click();
+    await page.getByRole("alert").filter({ hasText: "열람 범위" }).waitFor();
+    assert.equal(await storage(), null);
+    await page.getByLabel(/기존 기록 열람 범위를 확인했어요/).check();
+    await page.getByRole("button", { name: "관계 저장", exact: true }).click();
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    const changed = (await storage()).children.find((child) => child.id === "c1");
+    assert.equal(changed.therapistId, "t2");
+    assert.deepEqual(changed.guardianIds, ["p2"]);
+    assert.ok(changed.historyAccess.every((entry) => entry.firstSequence > 1));
+    const projection = await page.evaluate(async () => {
+      const { project } = await import('/src/domain.js');
+      const { conversationView } = await import('/src/conversations.js');
+      const db = JSON.parse(localStorage.getItem('child-development-demo-v2'));
+      return ['therapist','guardian'].map((role,i) => {
+        const actor = {id:i ? 'p2':'t2',role}; const p = project(db,actor,'c1');
+        return {records:p.records.length,publications:p.publications.length,feedback:p.feedback.length,messages:conversationView(db,actor,'c1').messages.length};
+      });
+    });
+    assert.ok(projection.every((p) => Object.values(p).every((count) => count === 0)));
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+    await page.screenshot({ path: `${root}/relationships-${width}.png`, fullPage: true });
+    await page.reload();
+    await page.getByLabel("사용자 역할", { exact: true }).selectOption("center");
+    await nav("아동");
+    assert.ok((await page.locator(".child-row").first().innerText()).includes("다른 치료사"));
+    await page.getByRole("button", { name: "담당 관계 관리", exact: true }).click();
+    await page.locator('[name="therapistId"]').selectOption("t1");
+    await page.locator('[name="guardianIds"][value="p2"]').uncheck();
+    await page.locator('[name="guardianIds"][value="p1"]').check();
+    await page.getByLabel(/기존 기록 열람 범위를 확인했어요/).check();
+    await page.getByRole("button", { name: "관계 저장", exact: true }).click();
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    await page.getByLabel("사용자 역할",{exact:true}).selectOption("guardian");
+    await nav("기록");
+    assert.equal(await page.locator(".record-card").count(),0);
+    await page.getByLabel("사용자 역할",{exact:true}).selectOption("center");
+    await nav("아동");
+    await page.getByRole("button",{name:"담당 관계 관리",exact:true}).click();
+    await page.locator('[name="history-p1"]').selectOption("all");
+    await page.getByLabel(/기존 기록 열람 범위를 확인했어요/).check();
+    const before = await storage();
+    await page.getByRole("button",{name:"관계 저장",exact:true}).click();
+    await page.getByRole("alert").filter({hasText:"별도로 확인"}).waitFor();
+    assert.deepEqual(await storage(),before);
+    await page.locator('[name="pastHistoryConfirmed"]').check();
+    await page.getByRole("button",{name:"관계 저장",exact:true}).click();
+    await page.locator("#dialog").waitFor({state:"hidden"});
+    await page.reload();
+    await page.getByLabel("사용자 역할",{exact:true}).selectOption("guardian");
+    await nav("기록");
+    assert.ok(await page.locator(".record-card").count() > 0);
+    const final = await storage();
+    for (const key of ['records','publications','messages','feedback','goals','appointments']) assert.deepEqual(final[key],before[key]);
+    assert.equal(final.children.find((c) => c.id === 'c1').historyAccess.find((p) => p.userId === 't1').firstRecordRevision > 0,true);
+    checks.push(`${width}px: default future-only, persisted boundary, default reconnect, separate confirmation, selected expansion, originals preserved`);
+  }
+  assert.deepEqual(errors, []);
+  assert.deepEqual(unexpectedRequests, []);
+  console.log(JSON.stringify({ passed: true, runId, checks }, null, 2));
+} catch(error) {
+  failure = String(error.message || error);
+  await page.screenshot({path:`${root}/relationships-failure.png`,fullPage:true}).catch(() => {});
+  throw error;
+} finally {
+  await context.close();
+  await browser.close();
+  await writeFile(`${root}/relationships-results.json`,JSON.stringify({runId,at:new Date().toISOString(),passed:!failure,checks,errors,unexpectedRequests,failure},null,2));
+}

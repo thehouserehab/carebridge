@@ -236,6 +236,7 @@ try {
   await page.getByRole("button", { name: "아동 등록" }).click();
   await fill("name", "가상 별 E2E");
   await fill("age", "6");
+  await fill("ageAsOf", "2026-01-01");
   await submit();
   await closed();
   assert.ok((await text()).includes("가상 별 E2E"));

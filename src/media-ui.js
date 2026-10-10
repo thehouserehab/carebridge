@@ -13,13 +13,32 @@ export function mediaGallery(items = [], withScope = false) {
     : "";
 }
 export class MediaView {
-  constructor(store) {
+  constructor(store, { canDisplay = () => true, missingMessage = () => null } = {}) {
     this.store = store;
+    this.canDisplay = canDisplay;
+    this.missingMessage = missingMessage;
     this.urls = [];
+    this.previews = [];
     this.generation = 0;
   }
   clear() {
     this.generation++;
+    for (const { slot, element, displayNode, download, onError } of this.previews) {
+      element.removeEventListener("error", onError);
+      // A revoked URL must never remain in a connected preview while the
+      // replacement waits for IndexedDB. Detach only this view's own nodes.
+      if (displayNode.parentNode === slot) {
+        const note = document.createElement("span");
+        note.className = "media-status";
+        note.textContent = "첨부파일 불러오는 중…";
+        displayNode.replaceWith(note);
+      }
+      if (download.parentNode === slot) download.remove();
+      if (element.tagName === "VIDEO") element.pause();
+      element.removeAttribute("src");
+      if (element.tagName === "VIDEO") element.load();
+    }
+    this.previews = [];
     for (const url of this.urls) URL.revokeObjectURL(url);
     this.urls = [];
   }
@@ -33,13 +52,18 @@ export class MediaView {
             pending.get(slot.dataset.mediaId) ||
             (await this.store.read(slot.dataset.mediaId));
           if (generation !== this.generation || !slot.isConnected) return;
+          // Permissions can change while IndexedDB is resolving. The caller
+          // may deny a stale preview before any object URL is created.
+          if (!this.canDisplay(slot))
+            throw new Error("저장된 자료가 변경됐어요. 창을 닫고 최신 내용을 확인해 주세요.");
           if (
             !blob ||
             blob.type !== slot.dataset.type ||
             blob.size !== Number(slot.dataset.size)
           )
             throw new Error(
-              "이 브라우저에서 원본을 찾지 못했어요. 파일을 다시 첨부해 주세요.",
+              this.missingMessage(slot) ||
+                "이 브라우저에서 원본을 찾지 못했어요. 파일을 다시 첨부해 주세요.",
             );
           const url = URL.createObjectURL(blob);
           this.urls.push(url);
@@ -56,12 +80,15 @@ export class MediaView {
             element.playsInline = true;
             element.setAttribute("aria-label", slot.dataset.name);
           }
+          const preview = { slot, element, displayNode: element, download: null, onError: null };
           const errorMessage = () => {
+            if (generation !== this.generation || element.parentNode !== slot) return;
             const note = document.createElement("span");
             note.className = "media-status";
             note.textContent =
               "이 브라우저에서 미리볼 수 없는 파일이에요. 원본을 내려받아 확인해 주세요.";
             element.replaceWith(note);
+            preview.displayNode = note;
           };
           element.addEventListener("error", errorMessage, { once: true });
           const download = document.createElement("a");
@@ -70,6 +97,9 @@ export class MediaView {
           download.textContent = "원본 다운로드";
           download.className = "media-download";
           slot.replaceChildren(element, download);
+          preview.download = download;
+          preview.onError = errorMessage;
+          this.previews.push(preview);
         } catch (error) {
           if (generation === this.generation && slot.isConnected) {
             slot.replaceChildren();

@@ -3,10 +3,15 @@ import { seed } from "./seed.js";
 import { validateState } from "./domain.js";
 import { upgradeState } from "./conversations.js";
 export const BACKUP_KEY = `${STORAGE_KEY}-backup-schema-2`;
-export function load(storage) {
+export function load(storage, { requireExisting = false } = {}) {
   try {
     const raw = storage.getItem(STORAGE_KEY);
-    if (raw === null) return { db: upgradeState(seed()), error: null };
+    if (raw === null) {
+      // Initial demo bootstrap is allowed, but disappearance of an established
+      // workspace must not silently replace its records with sample data.
+      if (requireExisting) throw new Error("missing-workspace");
+      return { db: upgradeState(seed()), error: null };
+    }
     let db = JSON.parse(raw);
     if (!validateState(db)) throw new Error("invalid");
     if (db.schema === 2) {
@@ -33,7 +38,21 @@ export function load(storage) {
 export function persist(storage, db, previousRevision) {
   if (!validateState(db))
     throw new Error("저장할 데이터 연결을 확인해 주세요. 입력을 유지했어요.");
-  const raw = storage.getItem(STORAGE_KEY);
+  assertRevision(storage, previousRevision);
+  try {
+    storage.setItem(STORAGE_KEY, JSON.stringify(db));
+  } catch {
+    throw new Error(
+      "저장 공간 또는 브라우저 설정으로 저장하지 못했어요. 입력은 유지됩니다.",
+    );
+  }
+}
+// Preflight avoids unnecessary Blob writes; persist still repeats this check
+// after asynchronous file preparation so a later change cannot be overwritten.
+export function assertRevision(storage, previousRevision) {
+  let raw;
+  try { raw = storage.getItem(STORAGE_KEY); }
+  catch { throw new Error("브라우저 저장소를 확인하지 못했어요. 입력을 유지했어요."); }
   if (raw !== null) {
     let current;
     try {
@@ -51,11 +70,4 @@ export function persist(storage, db, previousRevision) {
     throw new Error(
       "저장소가 변경되었어요. 입력을 복사한 뒤 새로고침해 주세요.",
     );
-  try {
-    storage.setItem(STORAGE_KEY, JSON.stringify(db));
-  } catch {
-    throw new Error(
-      "저장 공간 또는 브라우저 설정으로 저장하지 못했어요. 입력은 유지됩니다.",
-    );
-  }
 }

@@ -1,4 +1,5 @@
 import { conversationList } from "./conversations.js";
+import { canReadRecord } from "./access.js";
 import { conversationRows } from "./chat-ui.js";
 import { escape as e, button, empty, dateLabel } from "./ui.js";
 import { today } from "./config.js";
@@ -16,7 +17,7 @@ export function communicationHome(db, actor, { heading, appointmentRows }) {
     .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))
     .slice(0, 3);
   const drafts = db.records
-    .filter((r) => childIds.has(r.childId) && r.status === "draft")
+    .filter((r) => childIds.has(r.childId) && r.status === "draft" && canReadRecord(db, actor, r))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const activities = rooms.flatMap((r) =>
     r.messages

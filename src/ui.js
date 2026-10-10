@@ -39,12 +39,23 @@ export const button = (
   `<button type="button" class="button ${style}" data-action="${action}" data-id="${escape(id)}" ${extra}>${label}</button>`;
 export const badge = (label, type = "neutral") =>
   `<span class="badge ${type}">${escape(label)}</span>`;
+const calendarDate = (value) => {
+  const text = String(value);
+  // Record/appointment dates are calendar values, not UTC instants. Full
+  // timestamps keep their actual instant and use the browser's local zone.
+  return new Date(/^\d{4}-\d{2}-\d{2}$/.test(text) ? `${text}T12:00:00` : text);
+};
+export function localCalendarDay(value) {
+  const date = calendarDate(value);
+  if (!Number.isFinite(date.getTime())) throw new RangeError("Invalid time value");
+  return `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
 export const dateLabel = (
   date,
   options = { month: "long", day: "numeric", weekday: "short" },
 ) =>
   new Intl.DateTimeFormat("ko-KR", options).format(
-    new Date(`${String(date).slice(0, 10)}T12:00:00`),
+    calendarDate(date),
   );
 export const empty = (title, description, action = "") =>
   `<div class="empty">${icon("record")}<h3>${escape(title)}</h3><p>${escape(description)}</p>${action}</div>`;
@@ -57,9 +68,11 @@ export function field(label, name, value = "", options = {}) {
     hint = "",
     min,
     step,
+    id,
   } = options;
-  return `<label class="field"><span>${escape(label)}${required ? " <em>필수</em>" : ""}</span>${type === "textarea" ? `<textarea name="${name}" ${required ? "required" : ""} maxlength="${max}" placeholder="${escape(placeholder)}" rows="3">${escape(value)}</textarea>` : `<input name="${name}" type="${type}" value="${escape(value)}" ${required ? "required" : ""} ${min !== undefined ? `min="${min}"` : ""} ${step ? `step="${step}"` : ""} maxlength="${max}" placeholder="${escape(placeholder)}">`}${hint ? `<small>${escape(hint)}</small>` : ""}</label>`;
+  const identity = id ? `id="${escape(id)}" aria-labelledby="${escape(id)}-label"` : "";
+  return `<label class="field"><span${id ? ` id="${escape(id)}-label"` : ""}>${escape(label)}${required ? " <em>필수</em>" : ""}</span>${type === "textarea" ? `<textarea ${identity} name="${name}" ${required ? "required" : ""} maxlength="${max}" placeholder="${escape(placeholder)}" rows="3">${escape(value)}</textarea>` : `<input ${identity} name="${name}" type="${type}" value="${escape(value)}" ${required ? "required" : ""} ${min !== undefined ? `min="${min}"` : ""} ${step ? `step="${step}"` : ""} maxlength="${max}" placeholder="${escape(placeholder)}">`}${hint ? `<small>${escape(hint)}</small>` : ""}</label>`;
 }
-export function select(label, name, options, value) {
-  return `<label class="field"><span>${escape(label)}</span><select name="${name}">${options.map(([v, t]) => `<option value="${escape(v)}" ${v === value ? "selected" : ""}>${escape(t)}</option>`).join("")}</select></label>`;
+export function select(label, name, options, value, id) {
+  return `<label class="field"><span${id ? ` id="${escape(id)}-label"` : ""}>${escape(label)}</span><select ${id ? `id="${escape(id)}" aria-labelledby="${escape(id)}-label"` : ""} name="${name}">${options.map(([v, t]) => `<option value="${escape(v)}" ${v === value ? "selected" : ""}>${escape(t)}</option>`).join("")}</select></label>`;
 }

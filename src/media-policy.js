@@ -55,6 +55,19 @@ export function fileSize(bytes) {
     ? `${(bytes / 1024 ** 2).toFixed(1)} MB`
     : `${Math.max(1, Math.ceil(bytes / 1024))} KB`;
 }
+// Signature checks are a format hint, not a decoder or malware scanner.
+export function matchesMediaSignature(type, bytes) {
+  const ascii = (start, end) => String.fromCharCode(...bytes.slice(start, end));
+  const matches = {
+    "image/jpeg": bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255,
+    "image/png": [137, 80, 78, 71, 13, 10, 26, 10].every((v, i) => bytes[i] === v),
+    "image/gif": ["GIF87a", "GIF89a"].includes(ascii(0, 6)),
+    "image/webp": ascii(0, 4) === "RIFF" && ascii(8, 12) === "WEBP",
+    "video/mp4": ascii(4, 8) === "ftyp" && bytes.length >= 12,
+    "video/webm": [26, 69, 223, 163].every((v, i) => bytes[i] === v),
+  };
+  return matches[type] === true;
+}
 export async function inspectFile(file) {
   if (!MEDIA_TYPES.includes(file.type))
     throw new Error(
@@ -68,18 +81,7 @@ export async function inspectFile(file) {
       `${file.name}: 빈 파일이거나 ${fileSize(limit)} 제한을 초과했어요.`,
     );
   const bytes = new Uint8Array(await file.slice(0, 40).arrayBuffer());
-  const ascii = (start, end) => String.fromCharCode(...bytes.slice(start, end));
-  const matches = {
-    "image/jpeg": bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255,
-    "image/png": [137, 80, 78, 71, 13, 10, 26, 10].every(
-      (v, i) => bytes[i] === v,
-    ),
-    "image/gif": ["GIF87a", "GIF89a"].includes(ascii(0, 6)),
-    "image/webp": ascii(0, 4) === "RIFF" && ascii(8, 12) === "WEBP",
-    "video/mp4": ascii(4, 8) === "ftyp" && bytes.length >= 12,
-    "video/webm": [26, 69, 223, 163].every((v, i) => bytes[i] === v),
-  };
-  if (!matches[file.type])
+  if (!matchesMediaSignature(file.type, bytes))
     throw new Error(`${file.name}: 파일 내용과 형식이 일치하지 않아요.`);
   return {
     id: crypto.randomUUID(),
