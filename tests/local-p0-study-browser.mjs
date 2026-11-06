@@ -26,7 +26,7 @@ export async function captureLocalP0StudySources() {
     'tests/local-home-news-browser-helpers.mjs', 'tests/local-home-news-layout.test.mjs', 'tests/local-product-ui.test.mjs',
     'tests/local-primary-communicator-browser-helpers.mjs', 'tests/local-primary-communicator.test.mjs', 'tests/local-chat-layout.test.mjs',
     'tests/local-composer-editing-browser-helpers.mjs',
-    'tests/local-p0-study-fixture.test.mjs', 'tests/local-workspace-browser-helpers.mjs',
+    'tests/local-p0-study-fixture.integration.mjs', 'tests/local-workspace-browser-helpers.mjs',
     'tests/message-browser-policy.mjs', 'scripts/p0-study-policy.mjs', 'scripts/local-p0-study.mjs',
     'scripts/local-p0-study-preflight.mjs', 'tests/local-p0-study-cli.test.mjs',
     'tests/local-p0-study-preflight.test.mjs', 'docs/p0-user-validation.md'];

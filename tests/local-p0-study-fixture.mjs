@@ -11,7 +11,9 @@ import { createOwnedCleanupError } from '../server/local-sandbox-cleanup.mjs';
 
 export const LOCAL_P0_BASELINE_COMMIT = '580b873d7cbc71ddf7d1589f50286ed5c11fd3e1';
 export const LOCAL_P0_BASELINE_SEED_BLOB = '59c806621e3dfd8e6a0a1eb45ec53df5af758bfd';
-export const LOCAL_P0_TASK_C_SUMMARY = '화면 시험용 가상 사례입니다. 하루는 두 가지 가상 놀이 중 하나를 손으로 골랐습니다. 다음 가상 활동 후에는 선택한 놀이와 반응을 이 기록의 답변으로 알려 주세요. 오래 이어가기 어려웠다면 그 점도 남겨 주세요. 실제 활동은 담당 치료사와 정해 주세요.';
+// C2 (2026-11-06): concrete synthetic play addresses the participant's ambiguity feedback.
+// Only C uses this summary; the pinned A/B comparison material below is unchanged.
+export const LOCAL_P0_TASK_C_SUMMARY = '화면 시험용 가상 사례입니다. 하루는 그림책 보기와 블록 쌓기 중 블록 쌓기를 손으로 골랐고, 블록 두 개를 포개며 놀이를 시작했습니다. 다음 가상 놀이 후에는 어떤 놀이를 골랐는지와 아이의 반응을 이 기록에 답장으로 남겨 주세요. 오래 이어가기 어려웠다면 그 점도 알려 주세요. 실제 활동은 담당 치료사와 정해 주세요.';
 
 const freeze = value => {
   for (const item of Object.values(value)) if (item && typeof item === 'object') freeze(item);
