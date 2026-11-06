@@ -2,14 +2,33 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { handleAuthRequest as authRoute } from "../server/auth-http.mjs";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const port = Number(process.env.PORT || 4173);
+const databaseUrl = process.env.DATABASE_URL;
+const secureCookies = process.env.NODE_ENV === "production" || process.env.SECURE_COOKIES === "true";
 const mime = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".svg": "image/svg+xml",
 };
+let database = null;
+let auth = null;
+let handleAuthRequest = authRoute;
+if (databaseUrl) {
+  const [{ postgresDatabase }, { migrate }, { Auth }] = await Promise.all([
+    import("../server/database.mjs"),
+    import("../server/migrate.mjs"),
+    import("../server/auth.mjs"),
+  ]);
+  database = postgresDatabase({
+    connectionString: databaseUrl,
+    ...(process.env.DATABASE_SSL === "require" ? { ssl: { rejectUnauthorized: true } } : {}),
+  });
+  if (process.env.RUN_MIGRATIONS === "true") await migrate(database);
+  auth = new Auth(database);
+}
 const server = createServer(async (req, res) => {
   res.setHeader(
     "Content-Security-Policy",
@@ -18,6 +37,7 @@ const server = createServer(async (req, res) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Referrer-Policy", "no-referrer");
+  if (await handleAuthRequest(req, res, { auth, secureCookies })) return;
   if (!["GET", "HEAD"].includes(req.method)) {
     res.writeHead(405);
     res.end();
@@ -62,3 +82,9 @@ server.on("error", (e) => {
 server.listen(port, "127.0.0.1", () =>
   console.log(`Local prototype: http://127.0.0.1:${port}`),
 );
+const close = async () => {
+  server.close();
+  await database?.close();
+};
+process.once("SIGINT", close);
+process.once("SIGTERM", close);

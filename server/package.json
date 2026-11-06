@@ -1,0 +1,23 @@
+{
+  "name": "carebridge-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "24.x" },
+  "scripts": {
+    "test": "node --test --test-concurrency=2 tests/*.test.mjs",
+    "test:postgres": "node postgres-integration.mjs",
+    "test:postgres:local": "node postgres-container-test.mjs",
+    "test:recovery:local": "node postgres-container-test.mjs --recovery",
+    "test:clamav:local": "node clamav-container-test.mjs",
+    "test:decoder:local": "node decoder-container-test.mjs",
+    "test:decoder-jobs:local": "node decoder-job-container-test.mjs",
+    "test:decoder-linux:local": "node linux-decoder-container-test.mjs",
+    "test:image-metadata:local": "node image-metadata-container-test.mjs",
+    "test:video-metadata:local": "node video-metadata-container-test.mjs",
+    "test:media-preparation:local": "node media-preparation-container-test.mjs",
+    "test:media-preparation:windows": "node windows-native-media-check.mjs"
+  },
+  "dependencies": { "pg": "8.23.0" },
+  "devDependencies": { "@electric-sql/pglite": "0.5.8" }
+}

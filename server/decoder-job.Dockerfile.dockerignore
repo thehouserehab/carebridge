@@ -1,0 +1,26 @@
+# Deny all private data. Public signed source and fixed worker modules only.
+**
+!package.json
+!src/
+!src/media-policy.js
+!server/
+!server/errors.mjs
+!server/media-decoder-policy.mjs
+!server/media-container-validation.mjs
+!server/media-decoder.mjs
+!server/decoder-job-protocol.mjs
+!server/decoder-job-worker.mjs
+!server/media-preparation-protocol.mjs
+!server/media-preparation-policy.mjs
+!server/media-preparation-worker.mjs
+!server/image-metadata.mjs
+!server/icc-profile.mjs
+!server/video-metadata.mjs
+!server/mp4-metadata.mjs
+!server/webm-metadata.mjs
+!test-results/
+!test-results/runtime-build/
+!test-results/runtime-build/ffmpeg-9.0.2/
+!test-results/runtime-build/ffmpeg-9.0.2/ffmpeg-9.0.2.tar.xz
+!test-results/runtime-build/ffmpeg-9.0.2/ffmpeg-9.0.2.tar.xz.asc
+!test-results/runtime-build/ffmpeg-9.0.2/ffmpeg-devel.asc

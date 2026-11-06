@@ -4,6 +4,30 @@ const text = (v, name, max = 2000) => {
     throw new Error(`${name}은 ${max}자 이내로 입력해 주세요.`);
   return s;
 };
+const titleSegments = new Intl.Segmenter("ko", { granularity: "grapheme" });
+
+// Suggest only from the date and the author's activity text. The original
+// fields stay untouched; rendering/escaping and applying the title belong to UI.
+export function recordTitleSuggestion(date, performed) {
+  if (typeof date !== "string" || typeof performed !== "string")
+    throw new TypeError("제목 제안에는 날짜와 활동 문자열이 필요합니다.");
+
+  let prefix = "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(date) && !date.startsWith("0000")) {
+    const timestamp = Date.parse(`${date}T12:00:00Z`);
+    if (Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === date)
+      prefix = `${date} `;
+  }
+  const activity = performed.toWellFormed().replace(/\s+/gu, " ").trim();
+  const available = 100 - prefix.length;
+  let shortened = "";
+  for (const { segment } of titleSegments.segment(activity)) {
+    if (shortened.length + segment.length > available) break;
+    shortened += segment;
+  }
+  return `${prefix}${shortened.trimEnd() || "세션 기록"}`;
+}
+
 // Pure content rules shared by the local UI and the server record service.
 // Relationship/reference authorization stays with each storage boundary.
 export function isCompleteAssessment(row) {

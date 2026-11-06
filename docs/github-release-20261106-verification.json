@@ -1,0 +1,128 @@
+{
+  "date": "2026-11-06",
+  "syntheticOnly": true,
+  "physicalIphoneTested": false,
+  "humanUsabilityMetricsCollected": false,
+  "browser": {
+    "runId": "d4cb237e-7609-4bca-9c30-71e9e05a9c5c",
+    "version": "156.0.8078.80",
+    "passed": true,
+    "widths": [
+      320,
+      390,
+      1440
+    ],
+    "shellWidths": [
+      320,
+      700,
+      701,
+      768,
+      1024
+    ],
+    "shortViewport": {
+      "width": 390,
+      "height": 420
+    },
+    "sourceSha256": "52bf2b94aeecebded88702b5746a63e5de5a5d01dec45771edb948bf7625319d",
+    "sourceFiles": 288,
+    "errors": 0,
+    "unexpectedRequests": 0,
+    "cleanupVerified": true
+  },
+  "commands": [
+    {
+      "name": "install",
+      "exitCode": 0,
+      "startedAt": "2026-11-06T03:03:30.3240992Z",
+      "finishedAt": "2026-11-06T03:03:31.7113905Z"
+    },
+    {
+      "name": "check-revised",
+      "exitCode": 0,
+      "startedAt": "2026-11-06T03:07:57.0217343Z",
+      "finishedAt": "2026-11-06T03:08:28.0224778Z"
+    },
+    {
+      "name": "test-revised-root-only",
+      "exitCode": 0,
+      "startedAt": "2026-11-06T03:08:28.1070923Z",
+      "finishedAt": "2026-11-06T03:08:34.8506693Z"
+    },
+    {
+      "name": "build-revised-root-only",
+      "exitCode": 0,
+      "startedAt": "2026-11-06T03:08:34.8809219Z",
+      "finishedAt": "2026-11-06T03:09:04.8447428Z"
+    },
+    {
+      "name": "install-server",
+      "exitCode": 0,
+      "startedAt": "2026-11-06T03:09:04.8471370Z",
+      "finishedAt": "2026-11-06T03:09:06.6087362Z"
+    },
+    {
+      "name": "test-fixtures-integration",
+      "exitCode": 0,
+      "startedAt": "2026-11-06T03:09:06.6127198Z",
+      "finishedAt": "2026-11-06T03:09:20.5911259Z"
+    },
+    {
+      "name": "test-revised-with-server",
+      "exitCode": 0,
+      "startedAt": "2026-11-06T03:09:20.6026616Z",
+      "finishedAt": "2026-11-06T03:09:24.2536532Z"
+    },
+    {
+      "name": "test-server",
+      "exitCode": 0,
+      "startedAt": "2026-11-06T03:09:24.2706149Z",
+      "finishedAt": "2026-11-06T03:12:07.4008088Z"
+    }
+  ],
+  "tests": [
+    {
+      "name": "test-revised-root-only",
+      "tests": 1964,
+      "pass": 1888,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 76
+    },
+    {
+      "name": "test-fixtures-integration",
+      "tests": 8,
+      "pass": 8,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "name": "test-revised-with-server",
+      "tests": 1964,
+      "pass": 1888,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 76
+    },
+    {
+      "name": "test-server",
+      "tests": 1882,
+      "pass": 1838,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 44
+    }
+  ],
+  "staticBuild": {
+    "passed": true,
+    "files": 36,
+    "includesLocalApi": false,
+    "includesServer": false
+  },
+  "limitations": [
+    "PC Chrome emulation is not physical iPhone Safari verification.",
+    "Conditional native-environment skips are not counted as passes.",
+    "Public static deployment remains the src prototype; the local API app is not an operating internet service.",
+    "Full logs and ephemeral accounts, keys, database and uploaded media are not published."
+  ]
+}

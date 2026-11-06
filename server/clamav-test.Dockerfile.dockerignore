@@ -1,0 +1,11 @@
+# Reject all context content except this test's explicit source/config files.
+**
+!package.json
+!src/
+!src/media-policy.js
+!server/
+!server/errors.mjs
+!server/clamav-client.mjs
+!server/clamav-native-test.mjs
+!server/clamav-test.conf
+!server/clamav-test-freshclam.conf

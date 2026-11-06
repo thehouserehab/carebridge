@@ -5,6 +5,17 @@ dist/
 test-results/
 .env
 .env.*
+*.pem
+*.key
+*.pfx
+*.p12
+*.cer
+*.crt
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.backup
 docs/product.md
 docs/verification.md
 *.log

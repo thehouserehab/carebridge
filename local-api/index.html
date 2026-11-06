@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko" data-media-mode="quarantine-only">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Carebridge · 함께 이어가는 아이의 하루</title>
+    <link rel="stylesheet" href="/local-api/styles.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main">본문으로 이동</a>
+    <header class="topbar"><strong>Carebridge</strong><span>가상 자료 시험</span></header>
+    <aside class="notice" aria-label="시험 환경 안내">
+      <strong>가상 자료만 입력해 주세요.</strong>
+      <details><summary>시험 환경 안내</summary><p data-storage-notice>이 PC 안에서만 연결됩니다. 서버 종료 시 계정과 대화가 사라집니다. 가상 첨부는 비공개 임시 폴더에 격리 보관 후 정상 종료 시 정리하며, 실제 아동 자료·사진·영상은 받지 않습니다.</p></details>
+    </aside>
+    <main id="main" tabindex="-1">
+      <div id="app"><p role="status">로그인 상태를 확인하고 있어요…</p></div>
+    </main>
+    <dialog id="self-profile-dialog" class="care-dialog self-profile-dialog"></dialog>
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+    <noscript>JavaScript를 켜야 이 시험 화면을 사용할 수 있습니다.</noscript>
+    <script type="module" src="/local-api/app.js"></script>
+  </body>
+</html>
