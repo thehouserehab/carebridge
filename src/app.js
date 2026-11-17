@@ -9,6 +9,7 @@ import {
 } from "./config.js";
 import { OnboardingController } from "./onboarding-controller.js";
 import { accountButton } from "./onboarding-ui.js";
+import { WebAiUi, sameWebAiSnapshot } from "./web-ai-ui.js";
 import { childProfileEditor, childAgeLabel, memberProfileEditor } from "./profile-ui.js";
 import { childProfileFormValues, memberDisplayNameForm } from "./profile-fields.js";
 import { demoMember, memberName } from "./member-profiles.js";
@@ -138,6 +139,38 @@ const onboarding = new OnboardingController({
   busy: () => saving || chat.sending || chat.editor?.busy || dialog.open,
   getMemberName: (id) => demoMember(db, id)?.name,
 });
+// Browser roles describe this synthetic workspace only. The AI server checks
+// its own HttpOnly session and never treats these IDs as authentication.
+const webAiContext = () => ({ actorId: actor().id, role: actor().role, childId });
+function webAiRecordSnapshot(id) {
+  if (!db || account !== 'therapist' || !childId) return null;
+  let record;
+  try { record = getView().records.find(value => value.id === id); } catch { return null; }
+  if (!record || record.status === 'draft') return null;
+  return { ...webAiContext(), workspaceRevision: db.revision, recordId: record.id,
+    updatedAt: record.updatedAt, source: { performed: record.performed ?? '', response: record.response ?? '' },
+    originalSummary: record.summary ?? '' };
+}
+const webAi = new WebAiUi({
+  getContext: webAiContext,
+  listRecords: () => {
+    if (!db || account !== 'therapist' || !childId) return [];
+    try { return getView().records.filter(record => record.status !== 'draft').map(({id,title,date}) => ({id,title,date})); }
+    catch { return []; }
+  },
+  getRecord: webAiRecordSnapshot,
+  onApply: (snapshot, summary) => {
+    if (saving || dialog.open || onboarding.dialog.open || chat.sending || chat.editor?.busy ||
+        !sameWebAiSnapshot(snapshot, webAiRecordSnapshot(snapshot.recordId))) return false;
+    recordForm(snapshot.recordId);
+    const field = dialog.querySelector('[name="summary"]');
+    if (!field || dialog.dataset.action !== 'record') return false;
+    field.value = summary; field.dispatchEvent(new Event('input', {bubbles:true})); dirty = true;
+    queueMicrotask(() => field.focus());
+    return true;
+  },
+  onError: flash,
+});
 const goalName = (id) =>
   db.goals.find((g) => g.id === id)?.title || "연결된 목표";
 const childName = (id) => db.children.find((c) => c.id === id)?.name || "";
@@ -182,6 +215,7 @@ function safeRender() {
   pageMedia.clear();
   try {
     render();
+    webAi.sync();
     pageMedia.hydrate(app);
     if (view === "chat") {
       chat.mount(chatTarget);
@@ -245,7 +279,7 @@ function render() {
       "",
     )}</select></div></header><main id="main" tabindex="-1"><div class="page-heading"><div><p class="eyebrow">${dateLabel(today(), { year: "numeric", month: "long", day: "numeric", weekday: "long" })}</p><h1>${{ home: account === "center" ? "오늘의 센터" : account === "guardian" ? "아이의 소식을 함께 나눠요" : "소식에서 다음 만남으로", chat: "대화", children: account === "guardian" ? "아이를 함께 이해해요" : "우리 아이들", records: account === "guardian" ? "센터에서 전해온 기록" : "기록과 변화", activities: "가정에서 이어가는 시간", schedule: "함께하는 일정", members: "구성원" }[view]}</h1></div>${primaryAction}</div>${context}<div id="view-content">${content}</div><footer class="page-footer">${e(BRAND.version)} · 실제 아동 정보는 입력하지 마세요.</footer></main></div><nav class="mobile-nav" aria-label="모바일 메뉴">${nav}</nav></div>`;
   app.querySelector(".topbar .demo-switch").insertAdjacentHTML("beforebegin",
-    `<div class="topbar-actions">${button(`${icon("child")}<span>내 표시 이름</span>`, "member-profile", "", "text member-profile-entry", 'aria-label="내 표시 이름"')}${accountButton("로그인 화면", "login", "", "text account-login-entry")}</div>`);
+    `<div class="topbar-actions">${button("AI 도우미", "web-ai", "", "text web-ai-entry")}${button(`${icon("child")}<span>내 표시 이름</span>`, "member-profile", "", "text member-profile-entry", 'aria-label="내 표시 이름"')}${accountButton("로그인 화면", "login", "", "text account-login-entry")}</div>`);
 }
 function emptyAssignmentView() {
   const description = account === "guardian"
@@ -805,6 +839,10 @@ document.addEventListener("click", (event) => {
   if (!target) return;
   event.preventDefault();
   const { action, id } = target.dataset;
+  if (action === "web-ai") {
+    if (!dialog.open && !onboarding.dialog.open && !saving && !chat.sending && !chat.editor?.busy) void webAi.open();
+    return;
+  }
   if (chat.sending || chat.editor?.busy) {
     flash("소식과 첨부를 확인하고 있어요. 완료될 때까지 기다려 주세요.");
     return;

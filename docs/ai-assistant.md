@@ -4,7 +4,7 @@
 
 2026-11-06 구현. 최신 `local-api/` 앱에 자유 대화와 치료사 기록 요약 도우미를 추가했다. OpenAI Responses API를 사용하는 서버 provider, 기존 인증을 거치는 HTTP 라우트, PC·모바일 대화창, 검토 후 기존 기록 작성란에 적용하는 흐름으로 구성한다.
 
-일반 `npm run dev:local-api`는 AI provider를 활성화하지 않는다. 별도 실행기만 외부 AI를 연결한다. Vercel의 현재 정적 빌드는 `src/`만 배포하므로 이번 AI 기능은 공개 사이트에 반영되지 않는다.
+이 문서는 `local-api/`의 AI 구현과 로컬 시험 기록을 설명한다. 일반 `npm run dev:local-api`는 AI provider를 활성화하지 않으며 별도 실행기로 외부 AI를 연결한다. Vercel 웹은 정적 `src/` 화면에 별도의 AI 함수와 체험 코드 세션을 연결한다. 로컬 계정·DB·호출 제한이 웹에 그대로 적용되는 것은 아니며, [웹 AI 배포 구성](web-ai-deployment.md)에서 별도 범위를 확인한다.
 
 | 기능 | 입력과 동작 | 저장·공유 |
 | --- | --- | --- |
