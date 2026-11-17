@@ -12,7 +12,7 @@ import { workspaceRecords } from './local-workspace-browser-helpers.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const hash = value => createHash('sha256').update(value).digest('hex');
 const code = 'LOCAL_RECORD_TEMPLATE_FAILED';
-const assets = new Set(['/', '/favicon.ico', '/local-api/app.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/client.js', '/local-api/care-client.js',
+const assets = new Set(['/', '/favicon.ico', '/local-api/app.js', '/local-api/ai-assistant-ui.js', '/local-api/ai-client.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/client.js', '/local-api/care-client.js',
   '/local-api/care-ui.js', '/local-api/workspace-ui.js', '/local-api/styles.css', '/local-api/media-client.js',
   '/local-api/media-ui.js', '/local-api/media-viewer.js', '/src/media-policy.js', '/src/record-fields.js', '/src/feedback-fields.js']);
 const fieldKeys = ['tool', 'item', 'value', 'unit', 'context'];

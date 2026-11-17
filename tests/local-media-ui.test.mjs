@@ -298,6 +298,7 @@ async function withFocusDom(h, work) {
   const node = (kind, dataset = {}, disabled = false) => ({ kind, dataset, disabled,
     matches(selector) {
       return kind === 'file' && selector === 'input[type="file"]' || kind === 'summary' && selector === 'summary' ||
+        kind === 'picker' && selector === '[data-media-pick]' ||
         selector.includes(',') && selector.split(',').includes(kind === 'file' ? 'input' : kind === 'summary' ? 'summary' : 'button');
     },
     focus() { if (!this.disabled) { doc.activeElement = this; for (const fn of listeners) fn({ target: this }); } },
@@ -306,13 +307,16 @@ async function withFocusDom(h, work) {
     if (nodes.includes(doc.activeElement)) doc.activeElement = body;
     html = value; nodes = [];
     if (value.includes('<summary>')) nodes.push(node('summary'));
+    const picker = value.match(/<button\b[^>]*data-media-pick\b[^>]*>/)?.[0];
+    if (picker) nodes.push(node('picker', {}, /\bdisabled\b/.test(picker)));
     const input = value.match(/<input\b[^>]*>/)?.[0]; if (input) nodes.push(node('file', {}, /\bdisabled\b/.test(input)));
     for (const match of value.matchAll(/data-media-action="([^"]+)" data-media-id="([^"]+)"([^>]*)/g))
       nodes.push(node('action', { mediaAction: match[1], mediaId: match[2] }, /\bdisabled\b/.test(match[3])));
   } });
   h.host.contains = (candidate) => nodes.includes(candidate);
   h.host.querySelector = (selector) => selector === '[data-media-details]' ? { open: true }
-    : nodes.find((n) => selector === 'summary' ? n.kind === 'summary' : selector === 'input[type="file"]' && n.kind === 'file') ?? null;
+    : nodes.find((n) => selector === 'summary' ? n.kind === 'summary' : selector === '[data-media-pick]' ? n.kind === 'picker'
+      : selector === 'input[type="file"]' && n.kind === 'file') ?? null;
   h.host.querySelectorAll = () => nodes.filter((n) => n.kind === 'action');
   try {
     Object.defineProperty(globalThis, 'document', { configurable: true, value: doc });
@@ -652,4 +656,188 @@ test('feedback cleanup is limited to existing selection status/cancel and accoun
   assert.equal(await h.ui.action('cancel', item.id), true); assert.equal(item.file, null);
   h.setContext({ cleanupOnly: false }); await h.ui.select([file()]); const next = h.item();
   h.ui.retainRooms('synthetic-user', 'synthetic-center', []); assert.equal(next.file, null); assert.equal(h.ui.states.size, 0);
+});
+
+function chooserDom(h) {
+  let clicks = 0, selectionCalls = 0, pending;
+  const details = { open: false }, picker = { disabled: false };
+  const input = { disabled: false, value: '', files: [], matches: value => value === 'input[type="file"]',
+    click() { clicks++; assert.equal(details.open, true, 'The existing details open synchronously before the chooser'); } };
+  let currentInput = input;
+  const select = h.ui.select.bind(h.ui);
+  h.ui.select = files => { selectionCalls++; pending = select(files); return pending; };
+  h.host.contains = node => [input, picker].includes(node);
+  h.host.querySelector = selector => selector === 'input[type="file"]' ? currentInput
+    : selector === '[data-media-details]' ? details : selector === '[data-media-pick]' ? picker : null;
+  return { input, picker, details, clicks: () => clicks, selections: () => selectionCalls,
+    replaceInput: () => { currentInput = { ...input }; },
+    async change(files, target = input) {
+      target.files = files; target.value = 'synthetic chooser value'; pending = undefined;
+      h.ui.change({ target }); await pending;
+    } };
+}
+
+test('only message and feedback expose one direct picker outside the attachment details', () => {
+  for (const purpose of ['message', 'feedback', 'record', 'reply']) {
+    const html = mediaUploadMarkup({ items: [] }, false, false, true, false, purpose);
+    assert.equal((html.match(/type="file"/g) ?? []).length, 1, purpose);
+    if (['message', 'feedback'].includes(purpose)) {
+      assert(html.indexOf('data-media-pick') < html.indexOf('<details'), purpose);
+      assert(html.indexOf('type="file"') < html.indexOf('<details'), purpose);
+      assert.match(html, /data-media-pick[^>]*>사진·동영상 선택<\/button>/);
+      assert.match(html, /class="media-picker-input" tabindex="-1" aria-hidden="true" multiple/);
+      assert.doesNotMatch(html.match(/<button\b[^>]*data-media-pick[^>]*>/)?.[0] ?? '', /aria-hidden/);
+      assert.match(html, /class="small media-selection-status" data-media-selection-status/);
+    } else {
+      assert(!html.includes('data-media-pick')); assert(!html.includes('media-selection-status'));
+      assert(html.includes('<label class="small">시험용 사진·영상 선택<input type="file"'));
+      assert.doesNotMatch(html.match(/<input\b[^>]*type="file"[^>]*>/)?.[0] ?? '', /aria-hidden|tabindex/);
+    }
+    const cleanup = mediaUploadMarkup({ items: [] }, false, true, true, false, purpose, true);
+    assert(!cleanup.includes('type="file"')); assert(!cleanup.includes('data-media-pick'));
+  }
+});
+
+test('direct picker stays synchronous; cancellation and same-file reselection never upload automatically', async () => {
+  for (const purpose of ['message', 'feedback']) {
+    const h = harness({}, { deliveryEnabled: true, purpose });
+    if (purpose === 'feedback') h.setContext({ feedbackId: 'feedback-picker' });
+    const chooser = chooserDom(h), chosen = file();
+    assert.equal(h.ui.openPicker(), true); assert.equal(chooser.clicks(), 1);
+    assert.equal(h.calls.length, 0); assert.equal(h.state().items.length, 0);
+    await chooser.change([chosen]); assert.equal(h.state().items.length, 1);
+    assert.equal(chooser.input.value, ''); assert.equal(h.ui.pickerRequest, null);
+    assert.match(h.host.innerHTML, />사진·동영상 추가<\/button>/);
+    const retained = h.item(), notice = h.state().notice;
+    assert.equal(h.ui.openPicker(), true); await chooser.change([]);
+    assert.deepEqual(h.state().items, [retained]); assert.equal(h.state().notice, notice);
+    assert.equal(h.ui.openPicker(), true); h.ui.cancelPicker({ target: chooser.input });
+    assert.equal(h.ui.pickerRequest, null); assert.deepEqual(h.state().items, [retained]);
+    assert.equal(h.ui.openPicker(), true); await chooser.change([chosen]);
+    assert.equal(h.state().items.length, 2); assert.notEqual(h.state().items[0].id, h.state().items[1].id);
+    assert.equal(h.calls.length, 0); assert(!/<img\b|<video\b|blob:|data:/.test(h.host.innerHTML));
+  }
+});
+
+test('late chooser results cannot attach to a changed room, feedback draft, account or authority generation', async () => {
+  for (const change of ['room', 'round-trip-room', 'feedback', 'account', 'generation', 'role', 'signal', 'hidden',
+    'disconnected', 'cleanup', 'operation', 'suspend', 'input']) {
+    const h = harness({}, { deliveryEnabled: true, purpose: 'feedback' });
+    h.setContext({ feedbackId: 'feedback-picker', role: 'guardian' });
+    const chooser = chooserDom(h); assert.equal(h.ui.openPicker(), true, change);
+    if (change === 'room') h.setContext({ roomId: 'another-room' });
+    if (change === 'round-trip-room') { h.setContext({ roomId: 'another-room' }); h.setContext({ roomId: 'synthetic-room' }); }
+    if (change === 'feedback') h.setContext({ feedbackId: 'another-feedback' });
+    if (change === 'account') h.setContext({ user: { userId: 'another-user' } });
+    if (change === 'generation') h.setContext({ generation: 2 });
+    if (change === 'role') h.setContext({ role: 'therapist' });
+    if (change === 'signal') h.setContext({ signal: new AbortController().signal });
+    if (change === 'hidden') h.setContext({ visible: false });
+    if (change === 'disconnected') h.setContext({ connected: false });
+    if (change === 'cleanup') h.setContext({ cleanupOnly: true });
+    if (change === 'operation') h.setContext({ messageOperation: { id: 'frozen-request' } });
+    if (change === 'suspend') h.ui.suspend();
+    if (change === 'input') chooser.replaceInput();
+    await chooser.change([file()]);
+    assert.equal(chooser.selections(), 0, change);
+    assert.equal([...h.ui.states.values()].flatMap(state => state.items).length, 0, change);
+    assert.equal(h.calls.length, 0, change); assert.equal(chooser.input.value, '', change);
+  }
+});
+
+test('direct picker requires the live owner, scope, host and unlocked selection state', () => {
+  for (const deny of ['owner', 'scope', 'busy', 'operation', 'cleanup', 'hidden', 'disconnected', 'aborted', 'inactive', 'host', 'input']) {
+    const h = harness(), chooser = chooserDom(h);
+    if (deny === 'owner') h.ui.owner = 'another-user';
+    if (deny === 'scope') h.context().roomId = 'unbound-room';
+    if (deny === 'busy') h.ui.busy = {};
+    if (deny === 'operation') h.context().messageOperation = {};
+    if (deny === 'cleanup') h.context().cleanupOnly = true;
+    if (deny === 'hidden') h.context().visible = false;
+    if (deny === 'disconnected') h.context().connected = false;
+    if (deny === 'aborted') h.context().signal = AbortSignal.abort();
+    if (deny === 'inactive') h.ui.active = false;
+    if (deny === 'host') h.ui.host = null;
+    if (deny === 'input') chooser.input.disabled = true;
+    assert.equal(h.ui.openPicker(), false, deny); assert.equal(chooser.clicks(), 0, deny); assert.equal(h.calls.length, 0, deny);
+  }
+  for (const purpose of ['record', 'reply']) {
+    const h = harness({}, { purpose }), chooser = chooserDom(h);
+    h.setContext({ recordId: 'record-picker', replyDraftId: 'reply-picker' });
+    assert.equal(h.ui.openPicker(), false); assert.equal(chooser.clicks(), 0);
+  }
+});
+
+test('an unowned file change is ignored while legacy record and reply inputs retain their selection path', async () => {
+  for (const purpose of ['message', 'feedback', 'record', 'reply']) {
+    const h = harness({}, { purpose }); h.setContext({ feedbackId: 'feedback-picker', recordId: 'record-picker', replyDraftId: 'reply-picker' });
+    const chooser = chooserDom(h); await chooser.change([file()]);
+    assert.equal(h.state().items.length, ['message', 'feedback'].includes(purpose) ? 0 : 1, purpose);
+  }
+});
+
+test('selection readiness follows canonical capture for waiting, failed, expired and uncertain files', async () => {
+  for (const purpose of ['message', 'feedback']) {
+    const h = harness({}, { deliveryEnabled: true, purpose }); if (purpose === 'feedback') h.setContext({ feedbackId: 'feedback-picker' });
+    assert.equal(h.ui.selectionStatus().ready, true); assert.equal(h.ui.selectionStatus().count, 0);
+    await h.ui.select([file()]); const item = h.item();
+    assert.deepEqual(h.ui.selectionStatus(), { count: 1, ready: false, text: '선택 1개 · 업로드 필요' });
+    for (const state of ['pending', 'receiving', 'quarantined', 'inspecting', 'rejected', 'bound', 'delete_pending', 'deleted']) {
+      item.upload = prepared(h, { state });
+      assert.throws(() => h.ui.readyItems(), { code: 'MEDIA_BUSY' });
+      assert.equal(h.ui.selectionStatus().ready, false, state);
+      assert(!h.ui.selectionStatus().text.includes('준비 완료'), state);
+    }
+    item.upload = prepared(h); assert.equal(h.ui.selectionStatus().ready, true); assert.match(h.ui.selectionStatus().text, /준비 완료/);
+    for (const flag of ['uncertain', 'cancelRequested']) {
+      item[flag] = true; assert.equal(h.ui.selectionStatus().ready, false); assert.match(h.ui.selectionStatus().text, /처리 결과 확인/); item[flag] = false;
+    }
+    item.upload = prepared(h, { expiresAt: '2000-01-01T00:00:00Z' }); assert.equal(h.ui.selectionStatus().ready, false); assert.match(h.ui.selectionStatus().text, /만료/);
+    item.upload = prepared(h, { state: 'quarantined', failureCode: 'SCAN_UNAVAILABLE' }); assert.match(h.ui.selectionStatus().text, /검사 상태 확인 필요/);
+    item.upload = prepared(h);
+    h.ui.readyItems = () => { throw new MediaApiError('MEDIA_BUSY'); };
+    assert.equal(h.ui.selectionStatus().ready, false, 'No second readiness rule can override the capture guard');
+  }
+});
+
+test('quarantine-only selections keep text delivery allowed, but busy or frozen operations stay locked', async () => {
+  const h = harness(); h.setContext({ enabled: false });
+  const chooser = chooserDom(h);
+  assert.equal(h.ui.openPicker(), true, 'Delivery availability is not permission to select a quarantine-only file');
+  await chooser.change([file()]);
+  assert.deepEqual(h.ui.captureAttachments(), []);
+  assert.deepEqual(h.ui.selectionStatus(), { count: 1, ready: true, text: '선택 1개 · 격리 보관 시험 · 전송 안 함' });
+  h.ui.busy = {}; assert.equal(h.ui.selectionStatus().ready, false); h.ui.busy = null;
+  h.setContext({ messageOperation: { id: 'frozen-request' } }); assert.equal(h.ui.selectionStatus().ready, false);
+  h.setContext({ messageOperation: null, cleanupOnly: true }); assert.equal(h.ui.selectionStatus().ready, false);
+  h.ui.suspend(); assert.deepEqual(h.ui.selectionStatus(), { count: 0, ready: false, text: '연결 후 첨부할 수 있어요.' });
+});
+
+test('picker focus returns after hashing without overriding a deliberate focus move', { concurrency: false }, async () => {
+  for (const move of [false, true]) {
+    const h = harness(), gate = deferred(), started = deferred(), slow = file();
+    Object.defineProperty(slow, 'arrayBuffer', { value: async () => { started.resolve(); await gate.promise; return bytes.slice().buffer; } });
+    await withFocusDom(h, async ({ doc, current, external }) => {
+      current('picker').focus(); const pending = h.ui.select([slow]); await started.promise;
+      const other = external(); if (move) other.focus();
+      gate.resolve(); assert.equal(await pending, true);
+      assert.equal(doc.activeElement, move ? other : current('picker'));
+    });
+  }
+});
+
+test('background readiness patches the compact status without replacing the picker or input', async () => {
+  const h = harness({}, { deliveryEnabled: true }); await h.ui.select([file()]);
+  const item = h.item(); item.upload = prepared(h, { state: 'inspecting' });
+  const fileStatus = {}, hint = {}, notice = {}, selection = {}, input = {}, picker = {};
+  const row = { dataset: { mediaId: item.id }, querySelector: selector => selector === '.media-file-status' ? fileStatus : hint };
+  h.host.querySelectorAll = () => [row];
+  h.host.querySelector = selector => ({ '[data-testid="media-upload-status"]': notice,
+    '[data-media-selection-status]': selection, 'input[type="file"]': input, '[data-media-pick]': picker })[selector];
+  const before = h.ui.observationMarkup(); h.ui.painted = before;
+  let replacements = 0; h.ui.render = () => { replacements++; };
+  item.upload = prepared(h); h.ui.renderObservation(item, before);
+  assert.equal(replacements, 0); assert.match(fileStatus.textContent, /준비 완료/); assert.match(selection.textContent, /선택 1개 · 준비 완료/);
+  assert.equal(h.host.querySelector('input[type="file"]'), input); assert.equal(h.host.querySelector('[data-media-pick]'), picker);
+  assert.equal(h.calls.length, 0);
 });

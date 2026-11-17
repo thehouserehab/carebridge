@@ -1,9 +1,21 @@
 import { MEDIA_LIMITS, MEDIA_TYPES } from '../src/media-policy.js';
+const LOCAL_AI_ERROR_CODES = Object.freeze(['AI_UNAVAILABLE','AI_BUSY','AI_LIMIT','AI_REQUEST_FAILED',
+  'AI_REQUEST_CONFLICT','AI_SOURCE_CHANGED','AI_CONVERSATION_CHANGED','AI_PROVIDER_UNAVAILABLE','AI_OUTPUT_INVALID','AI_CANCELLED']);
 
 // This transport does not import the prototype's whole-database repository.
 // The server authenticates every request; no role, token or content is persisted
 // in browser storage. The local-only launcher is the sole host of these assets.
 const MESSAGES = Object.freeze({
+  AI_UNAVAILABLE: 'AI가 아직 연결되지 않았어요. 서버 설정을 확인해 주세요.',
+  AI_BUSY: '앞선 AI 요청을 처리하고 있어요.',
+  AI_LIMIT: '이번 시험의 AI 호출 한도에 도달했어요.',
+  AI_REQUEST_FAILED: 'AI 요청 결과를 확인하지 못했어요. 자동 재전송하지 않습니다.',
+  AI_REQUEST_CONFLICT: '이 AI 요청 번호는 다시 사용할 수 없어요.',
+  AI_SOURCE_CHANGED: '원본 기록이 바뀌었어요. 최신 기록을 다시 확인해 주세요.',
+  AI_CONVERSATION_CHANGED: 'AI 대화가 변경됐어요. 다시 열어 주세요.',
+  AI_PROVIDER_UNAVAILABLE: 'AI 응답을 받지 못했어요. 입력은 유지됩니다.',
+  AI_OUTPUT_INVALID: 'AI 응답을 확인할 수 없어 적용하지 않았어요.',
+  AI_CANCELLED: 'AI 요청을 취소했어요.',
   AUTH_REQUIRED: '로그인이 필요합니다.',
   AUTH_INVALID: '시험 이메일 또는 비밀번호를 확인해 주세요.',
   EMAIL_LOGIN_INVALID: '인증번호를 확인하거나 새 번호를 요청해 주세요.',
@@ -222,7 +234,8 @@ export class LocalApiClient {
       }
       if (signal?.aborted) throw new LocalApiError('CANCELLED');
       if (!response.ok) {
-        const code = response.status === 401 ? (['AUTH_INVALID', 'EMAIL_LOGIN_INVALID'].includes(result?.error) ? result.error : 'AUTH_REQUIRED')
+        const aiCode = [409,429,503,502,408].includes(response.status) && LOCAL_AI_ERROR_CODES.includes(result?.error);
+        const code = aiCode ? result.error : response.status === 401 ? (['AUTH_INVALID', 'EMAIL_LOGIN_INVALID'].includes(result?.error) ? result.error : 'AUTH_REQUIRED')
           : response.status === 404 ? 'NOT_FOUND'
           : response.status === 403 ? 'FORBIDDEN'
           : response.status === 400 && ['PASSWORD_UNCHANGED', 'PASSWORD_CONFIRMATION_MISMATCH'].includes(result?.error) ? result.error

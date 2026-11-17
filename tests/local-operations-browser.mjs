@@ -15,7 +15,7 @@ const root = fileURLToPath(new URL('../', import.meta.url)), code = 'LOCAL_OPERA
 const hash = value => createHash('sha256').update(value).digest('hex');
 const profileKeys = ['conversationId', 'childId', 'name', 'age', 'ageAsOf', 'revision'].sort();
 const receiptKeys = ['operation', 'childId', 'conversationId', 'appliedVersion', 'changed', 'replayed'].sort();
-const assets = new Set(['/', '/favicon.ico', '/local-api/app.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/client.js', '/local-api/care-client.js',
+const assets = new Set(['/', '/favicon.ico', '/local-api/app.js', '/local-api/ai-assistant-ui.js', '/local-api/ai-client.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/client.js', '/local-api/care-client.js',
   '/local-api/care-ui.js', '/local-api/workspace-ui.js', '/local-api/styles.css', '/local-api/media-client.js', '/local-api/media-ui.js',
   '/local-api/media-viewer.js', '/local-api/operations-ui.js', '/local-api/operations-recipient.js', '/local-api/operations-client.js', '/local-api/operations-onboarding.js',
   '/local-api/operations-schedule.js', '/local-api/appointment-client.js', '/src/context-fields.js',

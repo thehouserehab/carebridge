@@ -20,7 +20,7 @@ const code = 'NATIVE_FEEDBACK_ATTACHMENTS_BROWSER_FAILED';
 const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value);
 const id = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(value);
 const sha = value => createHash('sha256').update(value).digest('hex');
-const assets = new Set(['/', '/favicon.ico', '/local-api/client.js', '/local-api/app.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/styles.css',
+const assets = new Set(['/', '/favicon.ico', '/local-api/client.js', '/local-api/app.js', '/local-api/ai-assistant-ui.js', '/local-api/ai-client.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/styles.css',
   '/local-api/care-client.js', '/local-api/care-ui.js', '/local-api/workspace-ui.js', '/local-api/media-client.js',
   '/local-api/media-ui.js', '/local-api/media-viewer.js', '/local-api/goal-client.js', '/local-api/appointment-client.js',
   '/local-api/self-profile-ui.js', '/local-api/self-profile-client.js', '/src/context-fields.js', '/src/profile-fields.js',
@@ -407,9 +407,11 @@ export async function exerciseFeedbackAttachmentsBrowser({ origin, centerId, con
       const sample = chosen[index], kind = index === 0 ? 'F1_PNG' : 'F2_VIDEO';
       const filename = index === 0 ? '가상-F1-<img src=x onerror=globalThis.__careFeedbackXss=1>-당시사진.png' : '가상-F2-교체한현재영상.mp4';
       const panel = dialog(guardian).locator('[data-feedback-upload]');
-      await panel.waitFor(); if (await panel.locator('[data-media-details]').getAttribute('open') === null) await panel.locator('[data-media-details] > summary').click();
+      await panel.waitFor();
       phase = kind + '_SELECT';
-      await panel.getByLabel('시험용 사진·영상 선택', { exact: true }).setInputFiles({ name: filename, mimeType: sample.type, buffer: sample.bytes });
+      const picker = guardian.page.waitForEvent('filechooser');
+      await panel.locator('[data-media-pick]').click();
+      await (await picker).setFiles({ name: filename, mimeType: sample.type, buffer: sample.bytes });
       const row = panel.getByTestId('media-upload-row').filter({ hasText: filename }); await row.waitFor();
       assert.equal(await row.locator('.account').textContent(), filename, code);
       assert.equal(await row.locator('img,video,script').count(), 0, code);

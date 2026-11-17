@@ -20,6 +20,19 @@ function runApp(name, context, dependencies = []) {
   return runInNewContext(`'use strict';\n${[...dependencies, name].map(appFunction).join('\n')}\n${name}();`, context, { timeout: 1000 });
 }
 
+test('chat attachment shortcut invokes the media owner synchronously only in the active authorized chat', () => {
+  const calls = [], context = { phase: 'workspace', activeView: 'chat', roomOpen: true, connected: true,
+    recipientRole: () => false, historyNavigation: null,
+    media: { openPicker() { calls.push('picker'); } }, updateComposer() { calls.push('composer'); } };
+  runApp('openChatAttachmentPicker', context);
+  assert.deepEqual(calls, ['picker', 'composer']);
+  for (const denied of [{ phase: 'login' }, { activeView: 'home' }, { roomOpen: false }, { connected: false },
+    { recipientRole: () => true }, { historyNavigation: {} }]) {
+    calls.length = 0; runApp('openChatAttachmentPicker', { ...context, ...denied });
+    assert.deepEqual(calls, []);
+  }
+});
+
 function messagePane({ top = 100, border = 4, height = 300, scrollTop = 250 } = {}) {
   const queries = [], writes = [], outerScroll = () => assert.fail('Message targeting must not scroll an ancestor.');
   const list = { clientHeight: height, clientTop: border, scrollHeight: 1400, scrollTop,
@@ -244,7 +257,7 @@ function disclosurePositionFixture({ summaryScope = '.room-head summary', atEnd 
 }
 
 test('room, tools and media disclosures restore the original end or reading anchor after their native toggle', () => {
-  for (const summaryScope of ['.room-head summary', '.chat-tools summary', '[data-chat-media] summary']) {
+  for (const summaryScope of ['.room-head summary', '.chat-tools summary', '[data-chat-media] summary', '[data-chat-attach]']) {
     for (const atEnd of [false, true]) {
       const f = disclosurePositionFixture({ summaryScope, atEnd }), active = f.context.document.activeElement;
       f.invoke();
@@ -386,6 +399,8 @@ for (const mobile of [true, false]) test(`the real ${mobile ? 'mobile' : 'deskto
     childName: room => room.profile.name, escape: value => value,
     renderRoom() {}, applyView(focus) { assert.notEqual(focus, true); },
     care: { update() {} }, media: { update() {} }, updateComposer() {},
+    // Keep the unrelated AI surface dependency present while exercising layout.
+    aiAssistant: { sync() {} }, aiChildPicker: null, aiEntryPending: null,
     focusPage() { assert.fail('Routine surface rendering must not align the outer page.'); },
     draftKey: () => 'synthetic-key', scrollMessageTarget,
     rememberReadingPosition() { context.readingPositions.set('synthetic-key', captureMessagePosition(f.list)); },
@@ -419,7 +434,7 @@ function readFixture({ position = 'sticky', navTop = 0, navHeight = 64,
   const context = {
     phase: 'workspace', activeView: 'chat', roomOpen: true, connected: true,
     historyNavigation: false, readBusy: false, roomId: 'synthetic-room', centerId: 'synthetic-center',
-    generation: 7, readThrough: 0, care: { dialog: null }, viewer: { dialog: null }, lifetime: { signal },
+    generation: 7, readThrough: 0, care: { dialog: null }, viewer: { dialog: null }, aiAssistant: { dialog: null }, lifetime: { signal },
     document: { visibilityState: 'visible', querySelector(selector) {
       assert.equal(selector, '#self-profile-dialog'); return null;
     } }, navigator: { onLine: true }, window: { visualViewport: viewport, innerHeight },
@@ -495,6 +510,19 @@ test('read clipping cannot bypass inactive scope, hidden page, open dialog or di
   }
 });
 
+test('AI modal keeps newly arrived conversation messages unread until the dialog closes', async () => {
+  const aiDialog = { open: true };
+  const f = readFixture({ bounds: [[120, 180]], changes: { aiAssistant: { dialog: aiDialog } } });
+  await runApp('tryRead', f.context);
+  assert.deepEqual(f.calls, [], 'A geometrically visible message behind the AI modal has not been read.');
+  assert.deepEqual(f.queries, [], 'An open AI dialog must block message geometry inspection.');
+  assert.equal(f.context.readThrough, 0);
+  aiDialog.open = false;
+  await runApp('tryRead', f.context);
+  assert.deepEqual(f.calls, [['synthetic-center', 'synthetic-room', 'synthetic-1']]);
+  assert.equal(f.context.readThrough, 1);
+});
+
 function roomFixture({ open = true, fresh = false } = {}) {
   const counts = { mount: 0, summary: 0, people: 0, messages: 0, observed: 0, disconnect: 0, composer: 0, remembered: 0 };
   const containerListeners = [];
@@ -519,7 +547,7 @@ function roomFixture({ open = true, fresh = false } = {}) {
     querySelector(selector) {
       if (selector === '[data-testid="message-list"]') return mounted ? list : null;
       return new Map([['#room-title', title], ['.room-participants', disclosure], ['.room-participants > summary', summary],
-        ['#participants', people], ['[data-primary-communicator]', primary], ['form', passive], ['textarea', passive]]).get(selector) ?? null;
+        ['#participants', people], ['[data-primary-communicator]', primary], ['form', passive], ['textarea', passive], ['[data-chat-attach]', passive]]).get(selector) ?? null;
     },
     set innerHTML(value) { assert.equal(mounted, false, 'A normal refresh must not replace the room/disclosure.'); mounted = true; mountHtml = value; counts.mount++; },
   };
@@ -534,7 +562,7 @@ function roomFixture({ open = true, fresh = false } = {}) {
     // History navigation is verified separately; this fixture isolates room
     // disclosure, message painting and viewport behavior.
     renderHistoryControls() {}, updateComposer() { counts.composer++; }, tryRead() {}, requestAnimationFrame() {},
-    preserveChatDisclosurePosition() {},
+    preserveChatDisclosurePosition() {}, openChatAttachmentPicker() {},
   };
   return { context, counts, containerListeners, disclosure, summary, people, primary, title, container, list, get mountHtml() { return mountHtml; } };
 }

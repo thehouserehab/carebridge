@@ -42,7 +42,7 @@ async function geometry(page) {
       messages: inspect(list), composer: inspect(document.querySelector('.composer')), input: inspect(input),
       send: inspect(document.querySelector('.composer button[type="submit"]')),
       newRecord: inspect(document.querySelector('[data-chat-care] [data-care-action="new-record"]')),
-      mediaSummary: inspect(document.querySelector('[data-chat-media] [data-media-details]:not([open]) > summary')),
+      attach: inspect(document.querySelector('[data-chat-attach]:not([hidden])')),
       primarySummary: inspect(document.querySelector('[data-primary-communicator] .primary-communicator-details:not([open]) > summary')),
       reading: { clientHeight: list.clientHeight, scrollHeight: list.scrollHeight, scrollTop: list.scrollTop,
         rowCount: list.querySelectorAll('[data-testid="message-row"]').length },
@@ -86,7 +86,7 @@ export async function verifyMobileChatLayout({ page, roomId, capture, refreshWhi
     // Guardian pages intentionally have no therapist record action. A present
     // control must still be fully visible through its scroll-container clip;
     // a clickable center alone would miss a cut-off lower edge.
-    for (const [name, control] of [['new-record', value.newRecord], ['media-summary', value.mediaSummary],
+    for (const [name, control] of [['new-record', value.newRecord], ['media-attach', value.attach],
       ['primary-summary', value.primarySummary]]) {
       if (!control) continue;
       check(reachable(control), `${name}-fully-accessible`);

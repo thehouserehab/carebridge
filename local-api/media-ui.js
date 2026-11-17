@@ -36,10 +36,12 @@ const fileStatus = (upload, enabled, purpose) => uploadNotice(upload, enabled) ?
 // Bound both retained bytes and tiny-file metadata across all room drafts.
 export const MEDIA_MEMORY_FILE_LIMIT = MEDIA_LIMITS.count * 4;
 
-export function mediaUploadMarkup(state, busy = false, open = false, deliveryEnabled = false, messageLocked = false, purpose = 'message', cleanupOnly = false) {
+export function mediaUploadMarkup(state, busy = false, open = false, deliveryEnabled = false, messageLocked = false, purpose = 'message', cleanupOnly = false, selection = null) {
   const record = purpose === 'record';
   const feedback = purpose === 'feedback', reply = purpose === 'reply', destination = record ? '기록' : feedback ? '활동 경험' : reply ? '답장' : '메시지';
   const disabled = busy || messageLocked;
+  const compactPicker = !cleanupOnly && ['message', 'feedback'].includes(purpose), count = state?.items?.length ?? 0;
+  const picker = compactPicker ? `<div class="media-picker"><button type="button" class="media-picker-button" data-media-pick ${disabled ? 'disabled' : ''}>사진·동영상 ${count ? '추가' : '선택'}</button><input type="file" class="media-picker-input" tabindex="-1" aria-hidden="true" multiple accept="${MEDIA_TYPES.join(',')}" aria-label="시험용 사진·영상 선택" ${disabled ? 'disabled' : ''}><p class="small media-selection-status" data-media-selection-status role="status" aria-live="polite">${esc(selection?.text ?? (count ? `선택 ${count}개` : '사진·동영상을 선택할 수 있어요.'))}</p></div>` : '';
   const scopeTitle = cleanupOnly ? '기존 첨부 상태 확인·취소만 가능' : !deliveryEnabled ? '격리 보관 시험 · 전송 안 함'
     : record ? '기본 비공개 · 기록에 보관' : feedback ? '활동 경험 저장 시 대화에 공유' : reply ? '답장과 함께 대화에 전송' : '메시지와 함께 대화에 전송';
   const scopeHelp = cleanupOnly ? '이전 요청의 첨부 선택만 표시합니다. 상태를 확인하고 취소해 주세요. 새 파일 선택·업로드·공유 변경은 할 수 없습니다.'
@@ -48,7 +50,7 @@ export function mediaUploadMarkup(state, busy = false, open = false, deliveryEna
         : feedback ? '검사·처리가 끝난 파일은 활동 경험 저장 시 이 대화 참여자에게 함께 공유됩니다. 업로드만으로 공유되지 않습니다.'
           : reply ? '검사·처리가 끝난 파일만 이 인용 답장과 함께 현재 대화 참여자에게 보냅니다. 원문의 파일은 자동으로 첨부하지 않으며 업로드만으로 공유되지 않습니다.'
             : '실제 검사·처리가 끝난 파일만 다음 메시지와 함께 현재 대화 참여자에게 보냅니다. 업로드만으로 상대에게 공유되지 않습니다.';
-  return `<details class="care-panel" data-media-details ${open ? 'open' : ''}><summary>${cleanupOnly ? '남아 있는 첨부 정리' : record ? '기록 사진·영상 추가' : feedback ? '활동 경험 사진·영상 추가' : reply ? '답장 사진·영상 추가' : '대화에 사진·영상 첨부'}</summary>
+  return `${picker}<details class="care-panel" data-media-details ${open ? 'open' : ''}><summary>${cleanupOnly ? '남아 있는 첨부 정리' : record ? '기록 사진·영상 추가' : feedback ? '활동 경험 사진·영상 추가' : reply ? '답장 사진·영상 추가' : '대화에 사진·영상 첨부'}</summary>
     <p class="small media-upload-scope"><strong>${scopeTitle}</strong><span>${scopeHelp}</span></p>
     <p class="small muted media-upload-safety">가상 자료만 사용하는 시험입니다. 실제 아동의 사진·영상은 선택하지 마세요.</p>
     <details class="media-upload-help" data-media-help><summary data-media-help-summary>파일 형식·용량 및 보관 안내</summary>
@@ -57,7 +59,7 @@ export function mediaUploadMarkup(state, busy = false, open = false, deliveryEna
       <p class="small muted">선택 목록은 새로고침하면 사라집니다. ${deliveryEnabled ? '파일은 이 PC의 비공개 시험 폴더에 보관됩니다. 서버 정리 전에는 직접 삭제하지 마세요.' : '업로드한 가상 파일은 이 PC의 비공개 임시 폴더에 보관되며 정상 종료 시 정리됩니다.'}</p>
     </details>
     ${messageLocked ? `<p class="small" role="status">${purpose === 'message' || reply ? `${destination} 전송` : `${destination} 저장`} 결과를 확인하고 있어요. 같은 파일과 요청 번호를 유지합니다.</p>` : ''}
-    ${cleanupOnly ? '' : `<label class="small">시험용 사진·영상 선택<input type="file" multiple accept="${MEDIA_TYPES.join(',')}" aria-label="시험용 사진·영상 선택" ${disabled ? 'disabled' : ''}></label>`}
+    ${cleanupOnly || compactPicker ? '' : `<label class="small">시험용 사진·영상 선택<input type="file" multiple accept="${MEDIA_TYPES.join(',')}" aria-label="시험용 사진·영상 선택" ${disabled ? 'disabled' : ''}></label>`}
     <p class="small media-upload-notice" role="status" aria-live="polite" data-testid="media-upload-status">${esc(state?.notice ?? '')}</p>
     <div class="care-fields">${(state?.items ?? []).map((item) => {
       const upload = item.upload, expired = uploadExpired(upload), text = fileStatus(upload, deliveryEnabled, purpose);
@@ -82,18 +84,36 @@ export class MediaUploadUi {
     this.api = api; this.getContext = getContext; this.onError = onError; this.createId = createId;
     this.deliveryEnabled = deliveryEnabled; this.onChanged = onChanged; this.purpose = purpose;
     this.states = new Map(); this.host = null; this.key = null; this.owner = null; this.epoch = 0;
-    this.busy = null; this.open = false; this.active = false; this.painted = null;
+    this.busy = null; this.open = false; this.active = false; this.painted = null; this.pickerRequest = null;
     this.observation = null; this.observationTimer = null; this.observationBudgets = new WeakMap();
-    this.click = (event) => { const b = event.target.closest('[data-media-action]'); if (b && this.host?.contains(b)) void this.action(b.dataset.mediaAction, b.dataset.mediaId); };
+    this.click = (event) => {
+      const picker = event.target.closest('[data-media-pick]');
+      if (picker && this.host?.contains(picker)) { this.openPicker(); return; }
+      const b = event.target.closest('[data-media-action]'); if (b && this.host?.contains(b)) void this.action(b.dataset.mediaAction, b.dataset.mediaId);
+    };
     this.change = (event) => {
-      if (event.target.matches('input[type="file"]')) { const files = [...event.target.files]; event.target.value = ''; void this.select(files); }
+      if (event.target.matches('input[type="file"]')) {
+        const files = [...event.target.files]; event.target.value = '';
+        if (['message', 'feedback'].includes(this.purpose)) {
+          const request = this.pickerRequest;
+          if (!request || request.input !== event.target) return;
+          const current = this.pickerCurrent(request); this.pickerRequest = null;
+          if (!current) return;
+        }
+        void this.select(files);
+      }
       else if (event.target.dataset?.mediaShare) this.setShare(event.target.dataset.mediaShare, event.target.checked);
+    };
+    this.cancelPicker = (event) => {
+      if (event.target === this.pickerRequest?.input) { event.target.value = ''; this.pickerRequest = null; }
     };
   }
   bind(host) {
     if (host === this.host) return;
     this.suspend(); this.host?.removeEventListener('click', this.click); this.host?.removeEventListener('change', this.change);
+    this.host?.removeEventListener('cancel', this.cancelPicker, true);
     this.host = host; host?.addEventListener('click', this.click); host?.addEventListener('change', this.change);
+    host?.addEventListener('cancel', this.cancelPicker, true);
   }
   update(context = this.getContext()) {
     if (!permitted(context, this.purpose)) { this.suspend(); return; }
@@ -102,6 +122,54 @@ export class MediaUploadUi {
     this.owner = context.user.userId; this.key = key; this.active = true;
     if (!this.states.has(key)) this.states.set(key, { items: [], notice: '' });
     this.render(); this.scheduleObservation();
+  }
+  pickerAllowed(context = this.getContext()) {
+    return ['message', 'feedback'].includes(this.purpose) && this.active && !!this.host && !this.busy &&
+      !context.messageOperation && context.cleanupOnly !== true &&
+      permitted(context, this.purpose) && this.owner === context.user.userId && this.key === keyOf(context, this.purpose) && this.states.has(this.key);
+  }
+  pickerCurrent(request) {
+    const context = this.getContext();
+    return this.pickerRequest === request && this.pickerAllowed(context) && request.epoch === this.epoch &&
+      request.key === this.key && request.owner === this.owner && request.generation === context.generation &&
+      request.role === context.role && request.signal === context.signal && request.host === this.host &&
+      request.state === this.states.get(this.key) && request.input === this.host.querySelector('input[type="file"]');
+  }
+  openPicker() {
+    const context = this.getContext(); if (!this.pickerAllowed(context)) return false;
+    const input = this.host.querySelector('input[type="file"]'), details = this.host.querySelector('[data-media-details]');
+    if (!input || input.disabled || typeof input.click !== 'function' || !details) return false;
+    const request = { input, host: this.host, key: this.key, owner: this.owner, epoch: this.epoch,
+      generation: context.generation, role: context.role, signal: context.signal, state: this.states.get(this.key) };
+    this.pickerRequest = request; this.open = true; details.open = true;
+    // Keep this synchronous inside the user's activation. Selection alone does
+    // not reserve, upload or share; a late chooser result cannot change rooms.
+    try { input.click(); return true; }
+    catch { if (this.pickerRequest === request) this.pickerRequest = null; return false; }
+  }
+  selectionStatus() {
+    const context = this.getContext();
+    if (!this.active || !permitted(context, this.purpose) || this.owner !== context.user.userId ||
+        this.key !== keyOf(context, this.purpose) || !this.states.has(this.key))
+      return { count: 0, ready: false, text: '연결 후 첨부할 수 있어요.' };
+    const items = this.states.get(this.key).items, count = items.length;
+    let ready = false;
+    try { this.readyItems(); ready = true; } catch { /* The canonical capture guard owns readiness. */ }
+    let reason;
+    if (context.cleanupOnly === true) reason = '첨부 정리 필요';
+    else if (context.messageOperation) reason = '저장·전송 결과 확인 중';
+    else if (this.busy) reason = '파일 확인 중';
+    else if (!count) return { count, ready, text: '사진·동영상을 선택할 수 있어요.' };
+    else if (!this.deliveryEnabled) reason = '격리 보관 시험 · 전송 안 함';
+    else if (ready) reason = '준비 완료';
+    else if (items.some(item => item.uncertain || item.cancelRequested || item.upload?.state === 'bound')) reason = '처리 결과 확인 필요';
+    else if (items.some(item => uploadExpired(item.upload))) reason = '만료된 파일 확인 필요';
+    else if (items.some(item => ['rejected', 'delete_pending', 'deleted'].includes(item.upload?.state))) reason = '선택 파일 정리 필요';
+    else if (items.some(item => !item.upload || item.upload.state === 'pending')) reason = '업로드 필요';
+    else if (items.some(item => uploadNotice(item.upload, true) || item.observationNotice)) reason = '검사 상태 확인 필요';
+    else if (items.some(item => ['receiving', 'quarantined', 'inspecting'].includes(item.upload?.state))) reason = '검사·처리 확인 중';
+    else reason = '첨부 상태 확인 필요';
+    return { count, ready, text: `선택 ${count}개 · ${reason}` };
   }
   observationAllowed(context = this.getContext()) {
     return this.deliveryEnabled && this.active && !!this.host && !this.busy && !context.messageOperation &&
@@ -150,7 +218,7 @@ export class MediaUploadUi {
   }
   observationMarkup() {
     return mediaUploadMarkup(this.states.get(this.key), !!this.busy, false, this.deliveryEnabled,
-      !!this.getContext().messageOperation, this.purpose, this.getContext().cleanupOnly === true);
+      !!this.getContext().messageOperation, this.purpose, this.getContext().cleanupOnly === true, this.selectionStatus());
   }
   renderObservation(item, before) {
     const after = this.observationMarkup(); if (before === after) return;
@@ -163,6 +231,8 @@ export class MediaUploadUi {
     status.textContent = fileStatus(item.upload, this.deliveryEnabled, this.purpose);
     hint.textContent = item.observationNotice ?? ''; hint.hidden = !item.observationNotice;
     notice.textContent = this.states.get(this.key).notice;
+    const selection = this.host.querySelector('[data-media-selection-status]');
+    if (selection) selection.textContent = this.selectionStatus().text;
     this.painted = after;
   }
   async observeStatus(op) {
@@ -205,18 +275,20 @@ export class MediaUploadUi {
   render() {
     if (!this.active || !this.host || !this.key || !permitted(this.getContext(), this.purpose) || keyOf(this.getContext(), this.purpose) !== this.key) return;
     const locked = !!this.getContext().messageOperation, cleanupOnly = this.getContext().cleanupOnly === true;
-    const markup = mediaUploadMarkup(this.states.get(this.key), !!this.busy, false, this.deliveryEnabled, locked, this.purpose, cleanupOnly);
+    const selection = this.selectionStatus();
+    const markup = mediaUploadMarkup(this.states.get(this.key), !!this.busy, false, this.deliveryEnabled, locked, this.purpose, cleanupOnly, selection);
     if (this.painted === markup) return;
     const details = this.host.querySelector('[data-media-details]'); if (details) this.open = details.open;
     const helpOpen = this.host.querySelector('[data-media-help]')?.open === true;
     const focused = this.focusDescriptor();
-    this.host.innerHTML = mediaUploadMarkup(this.states.get(this.key), !!this.busy, this.open, this.deliveryEnabled, locked, this.purpose, cleanupOnly);
+    this.host.innerHTML = mediaUploadMarkup(this.states.get(this.key), !!this.busy, this.open, this.deliveryEnabled, locked, this.purpose, cleanupOnly, selection);
     const help = this.host.querySelector('[data-media-help]'); if (help) help.open = helpOpen;
     this.painted = markup;
     this.restoreFocus(focused);
   }
   focusDescriptor(element = globalThis.document?.activeElement) {
     if (!element || !this.host?.contains(element)) return null;
+    if (element.matches?.('[data-media-pick]')) return { kind: 'picker' };
     if (element.matches?.('input[type="file"]')) return { kind: 'file' };
     if (element.matches?.('[data-media-help-summary]')) return { kind: 'help' };
     if (element.matches?.('summary')) return { kind: 'summary' };
@@ -225,7 +297,8 @@ export class MediaUploadUi {
     return null;
   }
   restoreFocus(descriptor) {
-    const target = descriptor?.kind === 'file' ? this.host?.querySelector('input[type="file"]')
+    const target = descriptor?.kind === 'picker' ? this.host?.querySelector('[data-media-pick]')
+      : descriptor?.kind === 'file' ? this.host?.querySelector('input[type="file"]')
       : descriptor?.kind === 'help' ? this.host?.querySelector('[data-media-help-summary]')
       : descriptor?.kind === 'summary' ? this.host?.querySelector('summary')
         : descriptor?.kind === 'share' ? [...(this.host?.querySelectorAll('[data-media-share]') ?? [])].find((b) => b.dataset.mediaShare === descriptor.id)
@@ -241,7 +314,7 @@ export class MediaUploadUi {
   }
   suspend() {
     this.stopObservation();
-    this.active = false; this.epoch++; this.busy?.controller.abort(); this.painted = null;
+    this.active = false; this.epoch++; this.busy?.controller.abort(); this.painted = null; this.pickerRequest = null;
     this.stopFocusTracking(this.busy);
     if (this.host) { const details = this.host.querySelector('[data-media-details]'); if (details) this.open = details.open; this.host.replaceChildren(); }
   }

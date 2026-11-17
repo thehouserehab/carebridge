@@ -14,9 +14,17 @@ import { localSelfProfileRoute, executeLocalSelfProfile } from './local-self-pro
 import { localParticipationRoute, executeLocalParticipation } from './local-participation-http.mjs';
 import { LocalEmailLogin, localEmailLoginRoute } from './local-email-login.mjs';
 import { isSyntheticHttpsTransport } from './synthetic-https-transport.mjs';
+import { AiRecordDrafts } from './ai-record-drafts.mjs';
+import { AiConversations } from './ai-conversations.mjs';
+import { localAiRoute, executeLocalAi } from './local-ai-http.mjs';
+import { AiAudioNotes } from './ai-audio-notes.mjs';
+import { localAudioRoute, executeLocalAudio, AUDIO_NOTE_JSON_LIMIT } from './local-audio-http.mjs';
 
 const MAX_BODY_BYTES = 16 * 1024;
 const BODY_TIMEOUT_MS = 5000;
+// Bound transport copies as well as the service's retained source budget.
+// Never queue multi-megabyte bodies or concurrent original exports.
+const audioLargePayloads = new WeakSet();
 const ID = '[A-Za-z0-9_-]{1,100}';
 const roomPath = new RegExp(`^/api/local/centers/(${ID})/conversations/(${ID})/(profile|messages|read)$`);
 const inboxPath = new RegExp(`^/api/local/centers/(${ID})/inbox$`);
@@ -33,6 +41,8 @@ const OPERATIONS_CONFLICTS = ['CHILD_EXISTS', 'RELATIONSHIP_CONFLICT', 'PARTICIP
   'PRIMARY_COMMUNICATOR_CONFLICT', 'CARE_RECIPIENT_LINK_CONFLICT'];
 const INVITATION_CONFLICTS = ['INVITATION_EXISTS', 'INVITATION_NOT_PENDING', 'INVITATION_ACCOUNT_EXISTS',
   'INVITATION_CONFLICT', 'INVITATION_MEMBERSHIP_UNAVAILABLE', 'INVITATION_LIST_LIMIT'];
+const AI_ERRORS = ['AI_UNAVAILABLE', 'AI_PROVIDER_UNAVAILABLE', 'AI_BUSY', 'AI_LIMIT', 'AI_REQUEST_FAILED',
+  'AI_SOURCE_CHANGED', 'AI_REQUEST_CONFLICT', 'AI_CONVERSATION_CHANGED', 'AI_OUTPUT_INVALID', 'AI_CANCELLED'];
 const responses = Object.freeze({
   INVALID_INPUT: [400, '요청 내용을 확인해 주세요.'],
   AUTH_INVALID: [401, '이메일 또는 비밀번호를 확인해 주세요.'],
@@ -45,6 +55,16 @@ const responses = Object.freeze({
   PAYLOAD_TOO_LARGE: [413, '요청 내용이 너무 큽니다.'],
   UNSUPPORTED_MEDIA_TYPE: [415, '이 요청에 허용된 전송 형식을 사용해 주세요.'],
   LOCAL_API_UNAVAILABLE: [503, '로컬 연결을 처리하지 못했습니다. 입력을 유지하고 다시 확인해 주세요.'],
+  AI_UNAVAILABLE: [503, 'AI 연결이 준비되지 않았어요. 직접 작성한 내용은 유지됩니다.'],
+  AI_PROVIDER_UNAVAILABLE: [503, 'AI 연결을 사용할 수 없어요. 잠시 후 다시 확인해 주세요.'],
+  AI_BUSY: [409, 'AI가 앞선 요청을 처리하고 있어요. 완료 후 다시 시도해 주세요.'],
+  AI_LIMIT: [409, '이번 시험의 AI 사용 한도에 도달했어요. 직접 작성할 수 있습니다.'],
+  AI_REQUEST_FAILED: [409, 'AI 요청의 완료를 확인하지 못했어요. 자동으로 다시 전송하지 않았습니다.'],
+  AI_SOURCE_CHANGED: [409, '기록이 바뀌었어요. 최신 기록을 확인한 뒤 AI 초안을 다시 준비해 주세요.'],
+  AI_REQUEST_CONFLICT: [409, '이미 사용한 AI 요청 번호입니다. 내용을 확인해 주세요.'],
+  AI_CONVERSATION_CHANGED: [409, 'AI 대화가 바뀌었어요. 최신 대화를 확인해 주세요.'],
+  AI_OUTPUT_INVALID: [502, 'AI 응답을 확인하지 못했어요. 작성한 내용은 유지됩니다.'],
+  AI_CANCELLED: [409, 'AI 요청을 취소했어요. 작성한 내용은 유지됩니다.'],
   EMPTY_RECORD: [400, '정식 기록에는 작성한 내용이 필요합니다.'],
   ACCOUNT_SESSION_PRESENT: [409, '현재 로그인한 계정이 있어요. 기존 계정 연결을 선택하거나 로그아웃한 뒤 다시 확인해 주세요.'],
   PASSWORD_CONFIRMATION_MISMATCH: [400, '비밀번호 확인이 일치하지 않습니다.'],
@@ -82,7 +102,7 @@ function publicFailure(error) {
     else if (error.code === 'FORBIDDEN') code = 'NOT_FOUND';
   } else if (error instanceof AccountDeliveryError && error.code === 'INVALID_INPUT') code = error.code;
   else if (error instanceof RepositoryError) {
-    if (['INVALID_INPUT', 'PAYLOAD_TOO_LARGE', 'REQUEST_TIMEOUT', 'IDEMPOTENCY_CONFLICT', 'NOT_FOUND', 'EMPTY_RECORD', ...CARE_CONFLICTS, ...MEDIA_CONFLICTS, ...OPERATIONS_CONFLICTS].includes(error.code)) code = error.code;
+    if (['INVALID_INPUT', 'PAYLOAD_TOO_LARGE', 'REQUEST_TIMEOUT', 'IDEMPOTENCY_CONFLICT', 'NOT_FOUND', 'EMPTY_RECORD', ...CARE_CONFLICTS, ...MEDIA_CONFLICTS, ...OPERATIONS_CONFLICTS, ...AI_ERRORS].includes(error.code)) code = error.code;
     else if (['FORBIDDEN', 'ATTACHMENT_NOT_FOUND', 'CONTENT_UNAVAILABLE'].includes(error.code)) code = 'NOT_FOUND';
   }
   const [status, message] = responses[code];
@@ -106,11 +126,15 @@ function configuration(options) {
   if (options.accountDelivery !== undefined && !(options.accountDelivery instanceof AccountDelivery)) reject('LOCAL_API_UNAVAILABLE');
   if (options.passwordRecovery !== undefined && !(options.passwordRecovery instanceof LocalPasswordRecovery)) reject('LOCAL_API_UNAVAILABLE');
   if (options.emailLogin !== undefined && (!(options.emailLogin instanceof LocalEmailLogin) || !options.emailLogin.usesAuth(auth))) reject('LOCAL_API_UNAVAILABLE');
+  if (options.aiDrafts !== undefined && !(options.aiDrafts instanceof AiRecordDrafts)) reject('LOCAL_API_UNAVAILABLE');
+  if (options.aiConversations !== undefined && !(options.aiConversations instanceof AiConversations)) reject('LOCAL_API_UNAVAILABLE');
+  if (options.aiAudioNotes !== undefined && !(options.aiAudioNotes instanceof AiAudioNotes)) reject('LOCAL_API_UNAVAILABLE');
   return { auth, conversations, profiles, origin, cookieName, transport, secure, host: url.host, port: Number(url.port),
     memberProfiles: options.memberProfiles, relationships: options.relationships, appointments: options.appointments,
     careRecipientLinks: options.careRecipientLinks, primaryCommunicators: options.primaryCommunicators,
     accountDelivery: options.accountDelivery, passwordRecovery: options.passwordRecovery, emailLogin: options.emailLogin,
-    mediaAccess: options.mediaAccess, mediaDelivery: options.mediaAccess instanceof MediaAccess };
+    mediaAccess: options.mediaAccess, mediaDelivery: options.mediaAccess instanceof MediaAccess,
+    aiDrafts: options.aiDrafts, aiConversations: options.aiConversations, aiAudioNotes: options.aiAudioNotes };
 }
 function header(req, name) {
   let occurrences = 0;
@@ -263,6 +287,8 @@ export async function handleLocalApiRequest(req, res, options) {
     const authRoute = /^\/api\/local\/auth\/(login|session|logout)$/.exec(url.pathname);
     const inbox = inboxPath.exec(url.pathname), room = roomPath.exec(url.pathname);
     const care = localCareRoute(url, req.method);
+    const ai = localAiRoute(url, req.method);
+    const audio = localAudioRoute(url, req.method);
     const message = localMessageRoute(url, req.method);
     const operations = localOperationsRoute(url, req.method);
     const selfProfile = localSelfProfileRoute(url, req.method);
@@ -272,9 +298,9 @@ export async function handleLocalApiRequest(req, res, options) {
     const emailLogin = config.emailLogin ? localEmailLoginRoute(url, req.method) : null;
     const expectedMethod = authRoute ? (authRoute[1] === 'session' ? 'GET' : 'POST')
       : inbox || room?.[3] === 'profile' ? 'GET' : room?.[3] === 'read' ? 'POST' : null;
-    if ((!authRoute && !inbox && !room && !care && !message && !media && !mediaContent && !operations && !selfProfile && !participation && !invitation && !recovery && !emailLogin) || (expectedMethod && req.method !== expectedMethod) ||
+    if ((!authRoute && !inbox && !room && !care && !ai && !audio && !message && !media && !mediaContent && !operations && !selfProfile && !participation && !invitation && !recovery && !emailLogin) || (expectedMethod && req.method !== expectedMethod) ||
         (!expectedMethod && !['GET', 'POST'].includes(req.method))) reject('NOT_FOUND');
-    const params = care ? care.params : message || media || mediaContent || operations || selfProfile || participation || invitation || recovery || emailLogin ? {}
+    const params = care ? care.params : ai || audio || message || media || mediaContent || operations || selfProfile || participation || invitation || recovery || emailLogin ? {}
       : room?.[3] === 'messages' && req.method === 'GET' ? messagesQuery(url)
       : query(url, inbox ? ['limit', 'offset', 'expectedSnapshot'] : []);
     const token = sessionToken(req, config.cookieName);
@@ -286,6 +312,68 @@ export async function handleLocalApiRequest(req, res, options) {
     const expectedAccount = header(req, 'x-carebridge-account');
     if ((authRoute?.[1] === 'login' || invitation?.action === 'accept' || recovery || emailLogin) && expectedAccount !== undefined) reject('INVALID_INPUT');
     if (expectedAccount !== undefined && !/^[A-Za-z0-9_-]{1,100}$/.test(expectedAccount)) reject('AUTH_REQUIRED');
+    // Audio bodies can be much larger than ordinary JSON. Authenticate and
+    // authorize the saved record before admitting any file bytes. This route
+    // exists only in the explicitly enabled synthetic AI service lifetime.
+    if (audio) {
+      const authorizeSession = async () => {
+        const current = token ? await config.auth.authenticate(token) : null;
+        if (!current || current.userId !== expectedAccount) reject('AUTH_REQUIRED');
+        if (!current.centers.some(center => center.id === audio.centerId && center.role === 'therapist')) reject('NOT_FOUND');
+        return current;
+      };
+      const current = await authorizeSession();
+      if (!(config.aiAudioNotes instanceof AiAudioNotes)) reject('AI_UNAVAILABLE');
+      const identity = { userId: current.userId, centerId: audio.centerId };
+      await config.aiAudioNotes.assertUsable(identity, { conversationId: audio.conversationId, recordId: audio.recordId });
+      const large = audio.action === 'original' || (req.method === 'POST' && !audio.sessionId);
+      if (large && audioLargePayloads.has(config.aiAudioNotes)) reject('AI_BUSY');
+      if (large) audioLargePayloads.add(config.aiAudioNotes);
+      let original, draining = false, releaseExport = null;
+      try {
+        const audioBody = req.method === 'POST' ? await readJson(req, audio.sessionId ? 1024 : AUDIO_NOTE_JSON_LIMIT) : null;
+        await authorizeSession();
+        const result = await executeLocalAudio(audio, identity, audioBody, config.aiAudioNotes, authorizeSession);
+        original = result.original;
+        await authorizeSession();
+        // Login membership and the record relationship are distinct. Recheck
+        // the latter after the final async login check, including owner/deletion
+        // state when returning an existing private session or source copy.
+        if (audio.sessionId && audio.action !== 'remove')
+          await config.aiAudioNotes.get(identity, { conversationId: audio.conversationId, recordId: audio.recordId, sessionId: audio.sessionId });
+        else await config.aiAudioNotes.assertUsable(identity, { conversationId: audio.conversationId, recordId: audio.recordId });
+        if (req.aborted || res.destroyed || res.writableEnded) reject('AI_CANCELLED');
+        if (original) {
+          const extension = { 'audio/mp4': 'm4a', 'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/webm': 'webm' }[original.type];
+          let finished = false, timer;
+          const release = () => {
+            if (finished) return; finished = true; clearTimeout(timer);
+            original.bytes.fill(0);
+            audioLargePayloads.delete(config.aiAudioNotes);
+            res.off('finish', release); res.off('close', release);
+          };
+          releaseExport = release;
+          res.once('finish', release); res.once('close', release);
+          timer = setTimeout(() => { res.destroy(); release(); }, 10000); timer.unref?.();
+          // Deliberately download-only, never a public or playable media URL.
+          res.writeHead(200, { ...headers, 'Content-Type': 'application/octet-stream',
+            'Content-Length': original.bytes.length,
+            'Content-Disposition': `attachment; filename="carebridge-synthetic-${audio.sessionId}.${extension}"`,
+            'X-Content-SHA256': original.sha256 });
+          res.end(original.bytes);
+          draining = true;
+        } else respond(res, result.status, result.body);
+      } finally {
+        if (!draining) {
+          if (releaseExport) releaseExport();
+          else {
+            original?.bytes.fill(0);
+            if (large) audioLargePayloads.delete(config.aiAudioNotes);
+          }
+        }
+      }
+      return true;
+    }
     const body = req.method === 'POST' && !media?.binary ? await readJson(req, emailLogin ? 1024 : care?.collection === 'records' && care.targetId && !care.action ? 128 * 1024 : MAX_BODY_BYTES) : null;
     if (emailLogin) {
       const current = token ? await config.auth.authenticate(token) : null;
@@ -389,13 +477,35 @@ export async function handleLocalApiRequest(req, res, options) {
       respond(res, result.status, result.body);
       return true;
     }
-    const centerId = mediaContent?.centerId ?? media?.centerId ?? care?.centerId ?? message?.centerId ?? (inbox ?? room)[1];
+    const centerId = ai?.centerId ?? mediaContent?.centerId ?? media?.centerId ?? care?.centerId ?? message?.centerId ?? (inbox ?? room)[1];
     const membership = user.centers.find(center => center.id === centerId && ['therapist', 'guardian', 'care_recipient'].includes(center.role));
     if (!membership) reject('NOT_FOUND');
     // The first recipient MVP is text-only. Do not opt into clinical or media
     // adapters merely because this account can enter its own conversation.
     if (membership.role === 'care_recipient' && (mediaContent || media || care)) reject('NOT_FOUND');
     const identity = { userId: user.userId, centerId };
+    if (ai) {
+      if (ai.kind === 'summary' && membership.role !== 'therapist') reject('NOT_FOUND');
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      const close = () => { if (!res.writableEnded) abort(); };
+      req.once('aborted', abort); res.once('close', close);
+      if (req.aborted || res.destroyed) abort();
+      try {
+        const result = await executeLocalAi(ai, identity, body, config, { signal: controller.signal });
+        // A model request can outlive logout or membership revocation. Authorize
+        // the session again before returning any generated text to this tab.
+        const current = await config.auth.authenticate(token);
+        if (!current || current.userId !== user.userId || current.userId !== expectedAccount) reject('AUTH_REQUIRED');
+        const roles = ai.kind === 'summary' ? ['therapist'] : ['therapist', 'guardian', 'care_recipient'];
+        if (!current.centers.some(center => center.id === centerId && roles.includes(center.role))) reject('NOT_FOUND');
+        if (controller.signal.aborted) reject('AI_CANCELLED');
+        respond(res, result.status, result.body);
+      } finally {
+        req.off('aborted', abort); res.off('close', close);
+      }
+      return true;
+    }
     if (mediaContent) {
       if (!config.mediaDelivery) reject('NOT_FOUND');
       await streamLocalMediaContent(mediaContent, identity, config, req, res, header);

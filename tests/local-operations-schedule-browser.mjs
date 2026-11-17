@@ -14,7 +14,7 @@ const root = fileURLToPath(new URL('../', import.meta.url)), code = 'LOCAL_OPERA
 const hash = value => createHash('sha256').update(value).digest('hex');
 const appointmentKeys = ['id', 'conversationId', 'childId', 'revision', 'date', 'time', 'duration', 'title', 'room', 'status', 'updatedAt', 'therapistId'].sort();
 const receiptKeys = ['kind', 'id', 'revision', 'changed', 'replayed'].sort();
-const assets = new Set(['/', '/favicon.ico', '/local-api/app.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/client.js', '/local-api/care-client.js',
+const assets = new Set(['/', '/favicon.ico', '/local-api/app.js', '/local-api/ai-assistant-ui.js', '/local-api/ai-client.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/client.js', '/local-api/care-client.js',
   '/local-api/appointment-client.js', '/local-api/goal-client.js', '/local-api/care-ui.js', '/local-api/workspace-ui.js', '/local-api/styles.css',
   '/local-api/media-client.js', '/local-api/media-ui.js', '/local-api/media-viewer.js', '/local-api/operations-client.js',
   '/local-api/operations-ui.js', '/local-api/operations-recipient.js', '/local-api/operations-onboarding.js', '/local-api/operations-schedule.js', '/src/media-policy.js',
@@ -374,14 +374,37 @@ export async function runLocalOperationsScheduleBrowser(args = process.argv.slic
       await childView(therapist); await therapist.page.getByTestId('child-appointments').locator(`[data-appointment-record="${appointmentId}"]`).filter({ hasText: '기록 이어보기' }).click();
       await dialog(therapist).locator('form[data-care-form="record"]').waitFor();
       const historical = dialog(therapist).locator('[data-record-appointment-snapshot]'), current = dialog(therapist).locator('.care-appointment-context');
+      // Schedule context is a disclosure in the record editor. Open it through
+      // its summary, then use the scrolling body rather than the fixed dialog.
+      await reveal(historical);
       const historicalText = await historical.innerText(), currentText = await current.innerText();
       assert(historicalText.includes('09:00') && historicalText.includes('1번째 내용') && historicalText.includes(title1) && !historicalText.includes('11:00'), code);
       assert(currentText.includes('11:00') && currentText.includes(title2) && !currentText.includes('09:00'), code);
-      await dialog(therapist).evaluate(node => { node.scrollTop = 0; });
+      const recordBody = dialog(therapist).locator('[data-care-form="record"] > .care-fields');
+      assert.equal(await recordBody.evaluate(node => ['auto', 'scroll'].includes(getComputedStyle(node).overflowY)), true, code);
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const scroll = await recordBody.evaluate(node => {
+          const p = node.getBoundingClientRect();
+          const targets = [...node.querySelectorAll('.care-appointment-context,[data-record-appointment-snapshot]')].map(item => item.getBoundingClientRect());
+          const top = Math.min(...targets.map(r => r.top)), bottom = Math.max(...targets.map(r => r.bottom));
+          return { x: p.left + p.width / 2, y: p.top + p.height / 2,
+            delta: top < p.top + 8 ? top - p.top - 8 : bottom > p.bottom - 8 ? bottom - p.bottom + 8 : 0 };
+        });
+        if (scroll.delta === 0) break;
+        await therapist.page.mouse.move(scroll.x, scroll.y);
+        await therapist.page.mouse.wheel(0, scroll.delta);
+        await therapist.page.waitForTimeout(100);
+      }
       for (const label of [current, historical]) assert.equal(await label.evaluate(node => {
         const r = node.getBoundingClientRect(), d = node.closest('dialog').getBoundingClientRect();
-        return r.height > 0 && r.top >= Math.max(0, d.top) && r.bottom <= Math.min(innerHeight, d.bottom) &&
-          r.left >= Math.max(0, d.left) && r.right <= Math.min(innerWidth, d.right);
+        const p = node.closest('.care-fields').getBoundingClientRect();
+        const f = node.closest('form').querySelector(':scope > .care-submit').getBoundingClientRect();
+        const x = Math.min(4, r.width / 4), y = Math.min(4, r.height / 4);
+        const points = [[r.left + r.width / 2, r.top + r.height / 2], [r.left + x, r.top + y], [r.right - x, r.top + y],
+          [r.left + x, r.bottom - y], [r.right - x, r.bottom - y]];
+        return r.height > 0 && r.top >= Math.max(0, d.top, p.top) && r.bottom <= Math.min(innerHeight, d.bottom, p.bottom, f.top) &&
+          r.left >= Math.max(0, d.left, p.left) && r.right <= Math.min(innerWidth, d.right, p.right) &&
+          points.every(([px, py]) => node.contains(document.elementFromPoint(px, py)));
       }), true, code);
       await capture(therapist, 'record-current-and-historical-schedule');
       await dialog(therapist).getByRole('button', { name: '입력 취소', exact: true }).click(); await dialog(therapist).waitFor({ state: 'hidden' });

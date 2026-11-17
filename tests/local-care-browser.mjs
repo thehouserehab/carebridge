@@ -135,7 +135,7 @@ export async function runLocalCareBrowser(args = process.argv.slice(2)) {
         contexts.add(context);
         await context.route('**/*', async (route) => {
           const request = route.request(), url = new URL(request.url());
-          const staticFile = ['/', '/favicon.ico', '/local-api/client.js', '/local-api/app.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/care-ui.js', '/local-api/care-client.js', '/local-api/workspace-ui.js', '/local-api/styles.css', '/local-api/media-client.js', '/local-api/media-ui.js', '/local-api/media-viewer.js', '/src/media-policy.js', '/src/record-fields.js', '/src/feedback-fields.js'].includes(url.pathname) && ['GET', 'HEAD'].includes(request.method());
+          const staticFile = ['/', '/favicon.ico', '/local-api/client.js', '/local-api/app.js', '/local-api/ai-assistant-ui.js', '/local-api/ai-client.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/care-ui.js', '/local-api/care-client.js', '/local-api/workspace-ui.js', '/local-api/styles.css', '/local-api/media-client.js', '/local-api/media-ui.js', '/local-api/media-viewer.js', '/src/media-policy.js', '/src/record-fields.js', '/src/feedback-fields.js'].includes(url.pathname) && ['GET', 'HEAD'].includes(request.method());
           const primaryRead = request.method() === 'GET' && url.pathname === `/api/local/centers/${ids.centerId}/primary-communicator` &&
             [...url.searchParams].length === 1 && url.searchParams.get('conversationId') === ids.conversationId;
           const api = /^\/api\/local\/(?:auth\/(?:login|session|logout)|centers\/[A-Za-z0-9_-]+\/(?:inbox|conversations\/[A-Za-z0-9_-]+\/(?:profile|messages(?:\/[A-Za-z0-9_-]+)?|read|goals|appointments(?:\/[A-Za-z0-9_-]+)?|records(?:\/[A-Za-z0-9_-]+(?:\/(?:preview|publish))?)?|feedback\/[A-Za-z0-9_-]+(?:\/review)?|publications\/[A-Za-z0-9_-]+\/withdraw)))$/.test(url.pathname);
@@ -601,6 +601,14 @@ export async function runLocalCareBrowser(args = process.argv.slice(2)) {
           fieldNames: [...(document.querySelector('[data-testid="care-dialog"]')?.querySelectorAll('[name]') ?? [])].map((node) => node.name),
           statusPresent: !!document.querySelector('[data-care-status]'),
           formErrorPresent: !!document.querySelector('[data-care-error]')?.textContent,
+          referenceSources: [...document.querySelectorAll('[data-reference-source]')].map(node => ({
+            hidden: node.hidden, childCount: node.children.length, textLength: node.textContent.length,
+            rendered: node.getClientRects().length > 0,
+            enclosingDetails: [...(function* () { for (let p = node.parentElement; p; p = p.parentElement) if (p.matches('details')) yield p; })()].map(p => p.open),
+          })),
+          referenceButtons: [...document.querySelectorAll('[data-care-action="reference-source"]')].map(node => ({
+            expanded: node.getAttribute('aria-expanded'), disabled: node.disabled,
+          })),
         }));
         const filename = `failure-surface-${index}.png`;
         await page.screenshot({ path: path.join(folder, filename), fullPage: true,

@@ -13,7 +13,7 @@ import { workspaceView, workspaceRoom, workspaceAccountAction } from './local-wo
 
 const root = fileURLToPath(new URL('../', import.meta.url)), code = 'LOCAL_INVITATIONS_FAILED';
 const hash = value => createHash('sha256').update(value).digest('hex');
-const assets = new Set(['/', '/account/invitation', '/favicon.ico', '/local-api/app.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/client.js', '/local-api/account-input.js', '/local-api/care-client.js',
+const assets = new Set(['/', '/account/invitation', '/favicon.ico', '/local-api/app.js', '/local-api/ai-assistant-ui.js', '/local-api/ai-client.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/client.js', '/local-api/account-input.js', '/local-api/care-client.js',
   '/local-api/care-ui.js', '/local-api/workspace-ui.js', '/local-api/styles.css', '/local-api/goal-client.js',
   '/local-api/appointment-client.js', '/local-api/media-client.js', '/local-api/media-ui.js', '/local-api/media-viewer.js',
   '/local-api/operations-client.js', '/local-api/operations-ui.js', '/local-api/operations-recipient.js', '/local-api/operations-onboarding.js', '/local-api/operations-schedule.js',

@@ -100,7 +100,8 @@ export async function verifyResponsiveShell({ page, capture }) {
     check(await menu.count() === 1, 'account-menu-present');
     await closeAccount();
     for (const viewport of [{ width: 320, height: 740 }, { width: 700, height: 900 },
-      { width: 701, height: 900 }, { width: 768, height: 1024 }, { width: 1024, height: 768 }]) {
+      { width: 701, height: 900 }, { width: 768, height: 1024 }, { width: 960, height: 768 },
+      { width: 961, height: 768 }, { width: 1024, height: 768 }]) {
       const label = `shell-${viewport.width}x${viewport.height}`;
       stage = `${label}:resize`; await page.setViewportSize(viewport);
       for (const view of views) {
@@ -112,7 +113,7 @@ export async function verifyResponsiveShell({ page, capture }) {
           check(value.homeColumns?.length === 2, 'home-two-regions');
           const [main, aside] = value.homeColumns;
           check([main, aside].every(region => region.width > 0 && region.scrollWidth <= region.clientWidth + 1), 'home-region-overflow');
-          if (viewport.width <= 700) check(Math.abs(main.left - aside.left) <= 1 && main.bottom <= aside.top + 1, 'home-single-column');
+          if (viewport.width <= 960) check(Math.abs(main.left - aside.left) <= 1 && main.bottom <= aside.top + 1, 'home-single-column');
           else check(main.right <= aside.left + 1 && Math.abs(main.top - aside.top) <= 1, 'home-two-columns');
         }
         await capture(`${label}-${view}`);

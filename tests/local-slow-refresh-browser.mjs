@@ -20,7 +20,7 @@ import { verifyComposerEditing } from './local-composer-editing-browser-helpers.
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const code = 'LOCAL_SLOW_REFRESH_FAILED';
-const assets = new Set(['/', '/favicon.ico', '/local-api/app.js', '/local-api/client.js',
+const assets = new Set(['/', '/favicon.ico', '/local-api/app.js', '/local-api/ai-assistant-ui.js', '/local-api/ai-client.js', '/local-api/client.js',
   '/local-api/care-client.js', '/local-api/care-ui.js', '/local-api/workspace-ui.js', '/local-api/styles.css',
   '/local-api/media-client.js', '/local-api/media-ui.js', '/local-api/media-viewer.js',
   '/local-api/approval-pending-ui.js', '/local-api/care-recipient-client.js',

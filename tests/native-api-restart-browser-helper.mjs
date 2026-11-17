@@ -17,7 +17,7 @@ const code = 'NATIVE_API_RESTART_BROWSER_FAILED';
 const id = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(value);
 const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value);
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
-const assets = new Set(['/', '/favicon.ico', '/local-api/client.js', '/local-api/app.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/styles.css',
+const assets = new Set(['/', '/favicon.ico', '/local-api/client.js', '/local-api/app.js', '/local-api/ai-assistant-ui.js', '/local-api/ai-client.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/styles.css',
   '/local-api/care-client.js', '/local-api/care-ui.js', '/local-api/workspace-ui.js', '/local-api/media-client.js',
   '/local-api/media-ui.js', '/local-api/media-viewer.js', '/local-api/goal-client.js', '/local-api/appointment-client.js',
   '/local-api/self-profile-ui.js', '/local-api/self-profile-client.js', '/src/context-fields.js', '/src/profile-fields.js',

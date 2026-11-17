@@ -22,13 +22,15 @@ const labels = { task: '과제', assistance: '도움 수준', amount: '수행량
 const titleCase = (value) => value[0].toUpperCase() + value.slice(1);
 const recordDetailStatus = (observation, count) => [Object.values(observation).some(Boolean) ? '관찰 입력 있음' : '',
   count ? `측정값 ${count}개` : ''].filter(Boolean).join(' · ');
+const publicActivity = (activity) => activity
+  ? Object.fromEntries(['title', 'instruction', 'frequency', 'caution'].map((key) => [key, activity[key] ?? ''])) : null;
 
 // Exact public projection: do not serialize a clinical record into this view.
 export function publicCarePreview(preview) {
   return { recordId: preview.recordId, recordRevision: preview.recordRevision,
     relationshipsVersion: preview.relationshipsVersion, recipientIds: [...preview.recipientIds],
     date: preview.date, title: preview.title, summary: preview.summary,
-    activity: preview.activity ? Object.fromEntries(['title', 'instruction', 'frequency', 'caution'].map((key) => [key, preview.activity[key] ?? ''])) : null,
+    activity: publicActivity(preview.activity),
     attachmentCount: preview.attachmentCount ?? 0,
     ...(Array.isArray(preview.attachments) ? { attachments: preview.attachments.filter((file) => file.share === true)
       .map(({ id, name, type, size, share }) => ({ id, name, type, size, share })) } : {}) };
@@ -240,7 +242,7 @@ export function careReplyContent(view, values, attachments = []) {
 
 function activityMarkup(activity) {
   if (!activity) return '';
-  return `<section class="care-activity"><h3>${esc(activity.title)}</h3><p>${esc(activity.instruction)}</p><p class="small">빈도 · ${esc(activity.frequency)}</p>${activity.caution ? `<p class="small">주의 · ${esc(activity.caution)}</p>` : ''}</section>`;
+  return `<section class="care-activity" aria-label="가정 활동 안내"><p class="eyebrow">가정 활동</p><h3>${esc(activity.title)}</h3><dl class="care-activity-guide"><div><dt>방법</dt><dd data-activity-instruction>${esc(activity.instruction)}</dd></div><div><dt>빈도</dt><dd data-activity-frequency>${esc(activity.frequency)}</dd></div>${activity.caution ? `<div><dt>주의할 점</dt><dd data-activity-caution>${esc(activity.caution)}</dd></div>` : ''}</dl></section>`;
 }
 
 /** The existing chat owns the one message list and delegates these buttons. */
@@ -259,8 +261,10 @@ export function renderCareMessage(message, role, userId, delivery = false) {
   const actions = careMessageActions(message, role, userId);
   if (message.type === 'publication' && message.publication) {
     const p = message.publication;
-    return `<article class="care-publication" data-publication-id="${esc(p.id)}"><p class="eyebrow">${message.archived ? '이전 공유본' : '공유된 기록'} · ${esc(p.date ?? '')}</p><h3>${esc(p.title)}</h3><p>${esc(p.summary)}</p>${activityMarkup(p.activity)}${messageAttachments(message, delivery)}
-      ${!message.archived ? `<div class="care-actions">${role === 'guardian' && p.activity ? action('feedback', '활동 경험 남기기', message.id) : ''}${actions.includes('reply') ? action('reply', '인용 답장', message.id) : ''}${role === 'therapist' ? action('withdraw', '공유 종료', message.id) : ''}</div>` : ''}</article>`;
+    const canLeaveExperience = role === 'guardian' && p.activity && !message.archived;
+    const attachments = messageAttachments(message, delivery);
+    return `<article class="care-publication" data-publication-id="${esc(p.id)}"><p class="eyebrow">${message.archived ? '이전 공유본' : '공유된 기록'} · ${esc(p.date ?? '')}</p><h3>${esc(p.title)}</h3><p>${esc(p.summary)}</p>${activityMarkup(p.activity)}${files(message) ? `<section class="care-publication-media" aria-label="함께 공유한 사진·동영상"><p class="small"><strong>함께 공유한 사진·동영상 ${files(message)}개</strong></p>${attachments}</section>` : attachments}
+      ${!message.archived ? `<div class="care-publication-response">${canLeaveExperience ? `<p class="small muted">${actions.includes('reply') ? '활동 후에는 경험을 남기고, 방법이 궁금하면 이 기록에 답해 주세요.' : '활동 날짜·아이 반응·어려움을 남겨 주세요.'}</p>` : ''}<div class="care-actions">${canLeaveExperience ? action('feedback', '활동 경험 남기기', message.id, 'class="primary"') : ''}${actions.includes('reply') ? action('reply', '이 기록에 답하기', message.id) : ''}${role === 'therapist' ? action('withdraw', '공유 종료', message.id) : ''}</div></div>` : ''}</article>`;
   }
   if (message.type === 'feedback' && message.feedback) {
     const f = message.feedback;
@@ -270,9 +274,9 @@ export function renderCareMessage(message, role, userId, delivery = false) {
   return '';
 }
 
-const field = (name, label, value = '', { textarea = true, required = false, max = 2000, type = 'text' } = {}) => `<label>${esc(label)}${textarea
-  ? `<textarea name="${name}" maxlength="${max}" ${required ? 'required' : ''}>${esc(value)}</textarea>`
-  : `<input name="${name}" type="${type}" value="${esc(value)}" maxlength="${max}" ${required ? 'required' : ''} />`}</label>`;
+const field = (name, label, value = '', { textarea = true, required = false, max = 2000, type = 'text', hint = '' } = {}) => `<label>${esc(label)}${textarea
+  ? `<textarea name="${name}" maxlength="${max}"${hint ? ` aria-describedby="care-${name}-hint"` : ''} ${required ? 'required' : ''}>${esc(value)}</textarea>`
+  : `<input name="${name}" type="${type}" value="${esc(value)}" maxlength="${max}"${hint ? ` aria-describedby="care-${name}-hint"` : ''} ${required ? 'required' : ''} />`}</label>${hint ? `<p class="small muted care-field-hint" id="care-${name}-hint">${esc(hint)}</p>` : ''}`;
 const select = (name, label, value, options) => `<label>${label}<select name="${name}">${options.map(([v, text]) => `<option value="${esc(v)}" ${v === value ? 'selected' : ''}>${esc(text)}</option>`).join('')}</select></label>`;
 function assessmentRow(row, index) {
   const titles = ['도구', '항목', '측정값', '단위', '측정 조건'];
@@ -924,7 +928,8 @@ export class CareUi {
     this.snapshot(); view.values.attachments = (view.values.attachments ?? []).filter((file) => file.id !== id);
     const host = this.dialog?.querySelector('[data-feedback-attachments]'); if (host) host.innerHTML = this.feedbackAttachmentsMarkup(view);
     this.notice('다음 저장에서 이 첨부를 제외합니다. 이전 활동 경험과 치료 기록에 보존된 파일은 삭제하지 않습니다.');
-    this.dialog?.querySelector('[data-feedback-upload] summary')?.focus(); return true;
+    this.lockForm();
+    this.dialog?.querySelector('[data-feedback-upload] [data-media-pick]')?.focus(); return true;
   }
   feedbackAnchors(view) {
     if (view?.kind === 'review') return [{ feedbackId: view.feedbackId, messageId: view.messageId, feedbackRevision: view.expectedRevision, attachments: view.attachments }];
@@ -1100,6 +1105,86 @@ export class CareUi {
     input.value = recordTitleSuggestion(form.elements.namedItem('date')?.value ?? '', form.elements.namedItem('performed')?.value ?? '');
     state.view.values.title = input.value; input.focus();
   }
+  async applyAiSummary(draft, preview, context, operation) {
+    const state = this.state(), epoch = this.epoch;
+    const active = () => operation?.signal && !operation.signal.aborted && operation.isCurrent?.() === true &&
+      this.current(context, epoch) && this.state() === state;
+    // A reviewed AI suggestion must never overwrite an existing unsaved form.
+    if (!state || !active() || roleOf(context) !== 'therapist' ||
+        state.view || state.opening || state.mutation.operation) return false;
+    const view = await this.handleAction('edit-record', draft.recordId, null, { signal: operation.signal, isCurrent: active });
+    // Only the form opened by this operation belongs to its cancellation. A
+    // later user form (even for this same record) must never be closed or edited.
+    const ownsView = () => !!view && this.current(context, epoch) && this.state() === state && state.view === view;
+    const discardUnchanged = () => {
+      if (!ownsView()) return;
+      this.snapshot();
+      if (this.canCloseUnchangedRecord(state)) this.close();
+    };
+    if (!active() || !ownsView()) { discardUnchanged(); return false; }
+    this.snapshot();
+    const form = this.dialog?.querySelector('[data-care-form="record"]');
+    if (view.kind !== 'record' || view.recordId !== draft.recordId ||
+        view.expectedRevision !== draft.revision || view.values.performed !== preview.source.performed ||
+        view.values.response !== preview.source.response || !form || !this.canCloseUnchangedRecord(state)) {
+      discardUnchanged();
+      return false;
+    }
+    const input = form.elements.namedItem('summary');
+    if (!input || !active() || !ownsView()) { discardUnchanged(); return false; }
+    input.value = draft.summary;
+    view.values.summary = draft.summary;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    for (let parent = input.parentElement; parent; parent = parent.parentElement)
+      if (parent.tagName === 'DETAILS') parent.open = true;
+    this.notice('확인한 AI 초안을 요약 작성란에 넣었어요. 내용을 검토한 뒤 저장해 주세요. 아직 저장하거나 공유하지 않았어요.');
+    return true;
+  }
+  async applyAiAudio(draft, selection, context, operation) {
+    const limits = { performed: 2000, response: 2000, privateNote: 2000, nextPlan: 2000, summary: 1200 };
+    const keys = selection?.fields;
+    // The caller displays field-by-field replacement previews. Enforce the
+    // same narrow selection and explicit review at the destination as well.
+    if (!draft || !Number.isSafeInteger(draft.revision) || draft.revision < 1 ||
+        !Array.isArray(keys) || !keys.length || keys.length > 5 || new Set(keys).size !== keys.length ||
+        selection.reviewed !== true || typeof selection.overwriteConfirmed !== 'boolean' ||
+        !selection.expectedValues || Object.keys(selection.expectedValues).length !== keys.length ||
+        keys.some(key => !Object.hasOwn(limits, key) ||
+          typeof draft.fields?.[key] !== 'string' || !draft.fields[key].trim() ||
+          draft.fields[key].length > limits[key] || !draft.fields[key].isWellFormed() ||
+          /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/.test(draft.fields[key]) ||
+          typeof selection.expectedValues[key] !== 'string' ||
+          (selection.expectedValues[key].trim() && !selection.overwriteConfirmed))) return false;
+    const state = this.state(), epoch = this.epoch;
+    const active = () => operation?.signal && !operation.signal.aborted && operation.isCurrent?.() === true &&
+      this.current(context, epoch) && this.state() === state;
+    if (!state || !active() || roleOf(context) !== 'therapist' || state.view || state.opening || state.mutation.operation) return false;
+    const view = await this.handleAction('edit-record', draft.recordId, null, { signal: operation.signal, isCurrent: active });
+    const ownsView = () => !!view && this.current(context, epoch) && this.state() === state && state.view === view;
+    const discardUnchanged = () => {
+      if (!ownsView()) return;
+      this.snapshot();
+      if (this.canCloseUnchangedRecord(state)) this.close();
+    };
+    if (!active() || !ownsView()) { discardUnchanged(); return false; }
+    this.snapshot();
+    const form = this.dialog?.querySelector('[data-care-form="record"]');
+    if (view.kind !== 'record' || view.recordId !== draft.recordId || view.expectedRevision !== draft.revision ||
+        !form || !this.canCloseUnchangedRecord(state) || keys.some(key =>
+          (view.values[key] ?? '') !== selection.expectedValues[key] || !form.elements.namedItem(key))) {
+      discardUnchanged(); return false;
+    }
+    if (!active() || !ownsView()) { discardUnchanged(); return false; }
+    for (const key of keys) {
+      const input = form.elements.namedItem(key);
+      input.value = draft.fields[key]; view.values[key] = draft.fields[key];
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      for (let parent = input.parentElement; parent; parent = parent.parentElement)
+        if (parent.tagName === 'DETAILS') parent.open = true;
+    }
+    this.notice('검토한 녹음 초안을 선택한 작성란에 넣었어요. 내용을 확인하고 저장·공유해 주세요. 아직 저장하거나 공유하지 않았어요.');
+    return true;
+  }
   display() {
     const state = this.state(), view = state?.view;
     if (!view) return;
@@ -1158,7 +1243,7 @@ export class CareUi {
         <details ${view.templateSource && v.assessments?.length ? 'open' : ''}><summary>상세 관찰·측정값 <span class="care-summary-meta" data-record-detail-status>${esc(detailStatus)}</span></summary>${select('observationStatus', '관찰 상태', observation.status ?? '', [['', '선택하지 않음'], ['observed', '관찰함'], ['not-observed', '관찰하지 않음'], ['not-applicable', '해당 없음']])}<div class="care-grid">${observationKeys.map((key) => field(`observation${titleCase(key)}`, labels[key], observation[key], { textarea: false, max: 500 })).join('')}</div><div data-assessment-rows>${(v.assessments ?? []).map(assessmentRow).join('')}</div>${action('add-assessment', '측정값 추가')}</details>
         <details><summary>치료사 내부 메모 <span class="care-summary-meta" data-record-private-status>${v.privateNote?.trim() ? '내부 메모 있음' : '비공개'}</span></summary>${field('privateNote', '내부 메모 · 보호자에게 공개하지 않음', v.privateNote)}</details>
         ${this.deliveryEnabled ? `<section aria-label="기록 사진·영상"><h3>사진·영상</h3><p class="small muted">기본은 비공개입니다. 공유에 포함한 파일도 기록 저장 후 공유 미리보기에서 확인해야 보호자에게 보입니다.</p><div data-record-attachments>${this.recordAttachmentsMarkup(view)}</div><div data-record-upload></div></section>` : ''}
-        <details class="care-sharing-fields" ${v.summary || v.activity ? 'open' : ''}><summary>보호자 요약·가정 활동</summary><p class="small muted">‘공유 준비’는 기록 저장 후 미리보기만 열어요. 받는 사람과 공개 내용을 확인하고 별도로 공유해 주세요.</p>${field('summary', '보호자에게 전할 요약', v.summary)}${field('activityTitle', '가정 활동 이름', activity.title, { textarea: false, max: 100 })}${field('activityInstruction', '가정 활동 안내', activity.instruction)}${field('activityFrequency', '가정 활동 빈도', activity.frequency, { textarea: false, max: 100 })}${field('activityCaution', '가정 활동 주의사항', activity.caution, { max: 500 })}</details>`,
+        <details class="care-sharing-fields" ${v.summary || v.activity ? 'open' : ''}><summary>보호자 요약·가정 활동</summary><p class="small muted">‘공유 준비’는 기록 저장 후 미리보기만 열어요. 받는 사람과 공개 내용을 확인하고 별도로 공유해 주세요.</p>${field('summary', '보호자에게 전할 요약', v.summary)}${field('activityTitle', '가정 활동 이름', activity.title, { textarea: false, max: 100 })}${field('activityInstruction', '가정 활동 안내', activity.instruction, { hint: '준비물, 진행 순서, 보호자가 도울 방법을 적어 주세요.' })}${field('activityFrequency', '가정 활동 빈도', activity.frequency, { textarea: false, max: 100 })}${field('activityCaution', '가정 활동 주의사항', activity.caution, { max: 500 })}</details>`,
       // Keep draft as the first native submitter: Enter in a single-line
       // field must not silently turn an incomplete draft into a saved record.
       `<div class="care-record-secondary"><button type="submit" name="intent" value="draft" formnovalidate>임시저장</button>${action('discard', '입력 취소')}</div><div class="care-record-primary"><button type="submit" class="primary" name="intent" value="saved">기록 저장</button><button type="submit" name="intent" value="prepare-share" aria-label="보호자 공유 준비">공유 준비</button></div>`);
@@ -1169,8 +1254,8 @@ export class CareUi {
       const attachments = this.deliveryEnabled ? `<section class="care-share-attachments" aria-label="공유할 첨부"><h4>공유할 사진·영상 ${shared.length}개</h4>${shared.length ? `<p class="small muted">파일을 열어 내용을 확인해 주세요. 열기만으로 공유되지 않아요.</p><ul>${shared.map((file) => `<li><button type="button" data-open-record-attachment="${esc(file.id)}" data-record-id="${esc(p.recordId)}" data-record-revision="${p.recordRevision}"><span>${file.type.startsWith('image/') ? '사진 열기' : '동영상 열기'}</span><span>${esc(file.name)}</span></button></li>`).join('')}</ul>` : '<p class="small muted">공유에 포함한 첨부가 없어요.</p>'}</section>` : '';
       this.form('공유 미리보기', 'publish', `<section class="care-share-recipients" data-share-recipients aria-label="받는 보호자"><p class="small muted">받는 보호자 · ${p.recipientIds.length}명</p><ul>${p.recipientIds.map((id) => `<li>${esc(participants.find((p) => p.userId === id)?.displayName ?? '연결된 보호자')}</li>`).join('')}</ul></section><p class="small muted">보호자에게 아래 내용이 전달됩니다.</p><article class="care-share-preview"><p class="eyebrow">${esc(p.date)} · 치료 소식</p><h3>${esc(p.title)}</h3><p>${esc(p.summary)}</p>${activityMarkup(p.activity)}${attachments}</article><p class="care-scope-note">위 날짜·제목·요약·가정 활동${this.deliveryEnabled ? '·선택한 첨부' : ''}만 공유합니다. 측정값·내부 메모·참고 소식·임상 검토와 비공개 첨부는 공개하지 않습니다.</p><label class="care-check care-share-confirm"><input type="checkbox" name="confirmed" required ${v.confirmed ? 'checked' : ''} />받는 보호자와 공개 내용을 확인했어요</label>`, `${action('edit-preview-record', '기록 수정')}<button type="submit" class="primary">확인하고 공유</button>`);
     } else if (view.kind === 'feedback') {
-      this.form(view.expectedRevision ? '활동 경험 수정' : '활동 경험 남기기', 'feedback', `<p>${esc(view.sourceTitle)}</p>${field('date', '활동 날짜', v.date, { textarea: false, type: 'date', required: true })}${select('result', '수행 상태', v.result, [['done', '했어요'], ['partial', '일부 했어요'], ['skipped', '하지 못했어요']])}${field('reaction', '아이 반응', v.reaction, { required: true, max: 1000 })}${field('difficulty', '어려움', v.difficulty, { max: 1000 })}
-        ${this.deliveryEnabled ? `<section aria-label="활동 경험 사진·영상"><h3>사진·영상</h3><p class="small muted">저장하면 선택한 첨부가 이 대화 참여자에게 공유됩니다. 이미 저장된 파일은 현재 대화에서 열 수 있어요.</p><div data-feedback-attachments>${this.feedbackAttachmentsMarkup(view)}</div><div data-feedback-upload></div></section>` : ''}`, '<button type="submit" class="primary">활동 경험 저장</button>');
+      this.form(view.expectedRevision ? '활동 경험 수정' : '활동 경험 남기기', 'feedback', `<section class="care-feedback-context"><p class="small muted">연결된 기록 · ${esc(view.sourceTitle)}</p>${view.sourceActivity ? `<p><strong>${esc(view.sourceActivity.title)}</strong></p><details data-feedback-activity><summary>활동 안내 다시 보기</summary>${activityMarkup(view.sourceActivity)}</details>` : ''}<p class="small muted">이 활동의 수행 상태와 아이 반응을 남겨요. 저장하면 이 기록에 연결되어 대화에 표시됩니다.</p></section>${field('date', '활동 날짜', v.date, { textarea: false, type: 'date', required: true })}${select('result', '수행 상태', v.result, [['done', '했어요'], ['partial', '일부 했어요'], ['skipped', '하지 못했어요']])}${field('reaction', '아이 반응', v.reaction, { required: true, max: 1000 })}${field('difficulty', '어려움', v.difficulty, { max: 1000 })}
+        ${this.deliveryEnabled ? `<section aria-label="활동 경험 사진·영상"><h3>사진·영상</h3>${v.attachments?.length ? '<p class="small muted">이미 저장된 파일은 현재 대화에서 열 수 있어요.</p>' : ''}<div data-feedback-attachments>${this.feedbackAttachmentsMarkup(view)}</div><div data-feedback-upload></div></section>` : ''}`, `${this.deliveryEnabled ? '<p class="small care-attachment-status" id="feedback-attachment-status" data-feedback-ready-status role="status" aria-live="polite" hidden></p>' : ''}<button type="submit" class="primary"${this.deliveryEnabled ? ' aria-describedby="feedback-attachment-status"' : ''}>활동 경험 저장</button>`);
       this.syncFeedbackMedia(); this.lockForm();
     } else if (view.kind === 'review') {
       this.form('치료사 임상 검토', 'review', `<blockquote>${esc(view.sourceBody)}</blockquote>${this.exactFeedbackMarkup(this.feedbackAnchors(view)[0])}<p class="small muted">이 메모는 치료사만 볼 수 있어요. 보호자에게 전할 내용은 ‘인용 답장’으로 따로 보내 주세요.</p>${field('note', '비공개 임상 검토', v.note, { required: true })}`, '<button type="submit" class="primary">임상 검토 저장</button>');
@@ -1183,7 +1268,7 @@ export class CareUi {
       this.form('소식 반영 메모', 'text-review', `<p class="small muted">작성 시작 당시 ${view.expectedRevision}번째 소식 · 메모 저장 버전 ${view.expectedReviewVersion}</p><blockquote>${esc(view.sourceBody || '첨부 소식')}</blockquote>${attachmentNotice(view.attachmentCount, mediaDelivery)}${history}<p class="small muted">읽음과 별도로 다음 회기에 반영할 내용을 확인합니다. 메모는 담당 치료사만 볼 수 있고, 보호자에게는 반영 확인 상태만 보입니다. 보호자에게 전할 내용은 ‘인용 답장’으로 따로 보내 주세요.</p>${field('note', '비공개 반영 메모', v.note, { required: true })}`, '<button type="submit" class="primary">반영 확인 저장</button>');
       if (view.stale) { this.notice(staleTextReview); this.lockForm(); }
     } else if (view.kind === 'reply') {
-      this.form('소식에 인용 답장', 'reply', `<blockquote>${esc(view.sourceBody || '첨부 소식')}</blockquote>${view.sourceType === 'feedback' && roleOf(this.getContext()) === 'therapist' ? this.exactFeedbackMarkup(this.feedbackAnchors(view)[0]) : attachmentNotice(view.attachmentCount, mediaDelivery)}${field('body', '대화에 보낼 답장', v.body, { required: !this.deliveryEnabled })}${this.deliveryEnabled ? '<p class="small muted">글 없이 준비 완료된 사진·영상만 답장할 수도 있어요.</p><div data-reply-upload></div>' : ''}`, '<button type="submit" class="primary">답장 보내기</button>');
+      this.form(view.sourceType === 'publication' ? '이 기록에 답하기' : '소식에 인용 답장', 'reply', `<blockquote>${esc(view.sourceBody || '첨부 소식')}</blockquote>${view.sourceType === 'publication' ? '<p class="small muted">궁금한 점이나 전할 말을 남겨요. 이 답장은 선택한 공유 기록에 연결되어 대화에 표시됩니다.</p>' : ''}${view.sourceType === 'feedback' && roleOf(this.getContext()) === 'therapist' ? this.exactFeedbackMarkup(this.feedbackAnchors(view)[0]) : attachmentNotice(view.attachmentCount, mediaDelivery)}${field('body', '대화에 보낼 답장', v.body, { required: !this.deliveryEnabled })}${this.deliveryEnabled ? '<p class="small muted">글 없이 준비 완료된 사진·영상만 답장할 수도 있어요.</p><div data-reply-upload></div>' : ''}`, '<button type="submit" class="primary">답장 보내기</button>');
       this.syncReplyMedia(); this.lockForm();
     } else if (view.kind === 'text-edit') {
       this.form('메시지 본문 수정', 'text-edit', `<p class="small muted">본문만 수정합니다. 이미 치료 기록에 보존된 당시 참고 원문은 바뀌지 않습니다.</p>${attachmentNotice(view.attachmentCount, mediaDelivery)}${field('body', '메시지 본문', v.body, { required: !view.attachmentCount })}`, '<button type="submit" class="primary">수정 저장</button>');
@@ -1199,10 +1284,27 @@ export class CareUi {
   lockForm() {
     const state = this.state(), form = this.dialog?.querySelector('form'); if (!state || !form) return;
     const mutation = state.mutation;
+    let feedbackStatus = null;
+    // Initial save uses the same capture validation as submit, including files
+    // already bound to an edited experience. An ambiguous retry keeps its frozen
+    // operation and must not reclassify bound files as a new selection.
+    if (state.view?.kind === 'feedback' && this.feedbackMedia && !mutation.operation) {
+      feedbackStatus = this.feedbackMedia.selectionStatus();
+      if (feedbackStatus.ready) {
+        try { this.feedbackMedia.captureFeedbackAttachments(state.view.values.attachments ?? []); }
+        catch { feedbackStatus = { ...feedbackStatus, ready: false, text: '첨부 개수와 용량을 확인해 주세요. 기존 파일과 새 선택을 함께 계산해요.' }; }
+      }
+    }
+    const statusNode = form.querySelector('[data-feedback-ready-status]');
+    if (statusNode) {
+      statusNode.hidden = !feedbackStatus || (feedbackStatus.ready && !feedbackStatus.count);
+      statusNode.textContent = feedbackStatus?.text ?? '';
+    }
     for (const element of form.querySelectorAll('input,textarea,select,button')) {
       if (element.dataset.careAction === 'retry') continue;
       if (element.closest?.('[data-record-upload],[data-feedback-upload],[data-reply-upload]')) continue;
       element.disabled = !!mutation.operation || !!state.view?.contextRefresh || (state.view?.kind === 'record' && state.view.contextStale === true && element.type === 'submit') || (['record', 'feedback', 'reply'].includes(state.view?.kind) && !!(this.recordMedia?.busy || this.feedbackMedia?.busy || this.replyMedia?.busy) && element.type === 'submit') ||
+        (feedbackStatus?.ready === false && element.type === 'submit') ||
         (['text-review', 'family-plan', 'goal', 'appointment'].includes(state.view?.kind) && state.view.stale === true && element.type === 'submit');
     }
     form.querySelector('[data-care-action="retry"]')?.remove();
@@ -1228,9 +1330,10 @@ export class CareUi {
     this.updateRecordDisclosure();
     (focus ?? this.dialog.querySelector('[data-care-action="add-assessment"]')).focus();
   }
-  async handleAction(name, id, savedRevision = null) {
+  async handleAction(name, id, savedRevision = null, openingGuard = null) {
     const context = this.getContext(), state = this.state(), epoch = this.epoch;
-    if (!state || !this.current(context)) return;
+    const openAllowed = () => !openingGuard || (!openingGuard.signal.aborted && openingGuard.isCurrent());
+    if (!state || !this.current(context) || !openAllowed()) return;
     // A read-only comparison must not replace a record draft or its receipt.
     if (['compare-records', 'clear-comparison'].includes(name)) {
       if (roleOf(context) !== 'therapist' || context.panelMode === 'compact') return;
@@ -1254,7 +1357,8 @@ export class CareUi {
     }
     if (therapist && name === 'appointment-record' && !state.loaded) { this.fail({ code: 'CONTEXT_LOADING' }); return; }
     const opening = {}; state.opening = opening; state.readNotice = ''; this.render();
-    const available = () => this.current(context, epoch) && state.opening === opening && !state.view;
+    const available = () => this.current(context, epoch) && openAllowed() && state.opening === opening && !state.view;
+    const readSignal = openingGuard ? AbortSignal.any([context.signal, openingGuard.signal]) : context.signal;
     try {
       if (['new-goal', 'edit-goal', 'new-appointment', 'edit-appointment'].includes(name)) {
         if (!therapist) return;
@@ -1341,7 +1445,7 @@ export class CareUi {
           }
           state.view = { kind: 'publish', preview: publicCarePreview(preview), values: {} };
         } else {
-          const record = await this.api.record(context.centerId, context.roomId, id, context.signal);
+          const record = await this.api.record(context.centerId, context.roomId, id, readSignal);
           if (!available()) return;
           if (record.attachmentCount && (!this.deliveryEnabled || !Array.isArray(record.attachments) || record.attachments.length !== record.attachmentCount)) {
             this.fail({ code: 'ATTACHMENTS_NOT_CONNECTED' }); return;
@@ -1351,13 +1455,13 @@ export class CareUi {
           // authorized appointment head, never infer it from its old snapshot
           // or a date-bounded list that may omit a rescheduled appointment.
           const appointment = record.appointmentId
-            ? selectedAppointment ?? await this.currentAppointment(context, record.appointmentId) : null;
+            ? selectedAppointment ?? await this.currentAppointment({ ...context, signal: readSignal }, record.appointmentId) : null;
           if (!available()) return;
           const references = [];
           for (const reference of record.referenceSources ?? []) {
             let body = reference.body;
             if (reference.feedbackId) {
-              const message = await this.api.feedback(context.centerId, context.roomId, reference.feedbackId, context.signal, reference.feedbackRevision);
+              const message = await this.api.feedback(context.centerId, context.roomId, reference.feedbackId, readSignal, reference.feedbackRevision);
               if (!available()) return;
               body = message.feedback?.reaction ?? message.body;
             }
@@ -1378,7 +1482,7 @@ export class CareUi {
             catch { /* Without a confirmed baseline, closing retains the form. */ }
           }
         }
-        return;
+        return state.view;
       }
       let message = context.messages.find((m) => m.id === id);
       if (!message) return;
@@ -1435,7 +1539,8 @@ export class CareUi {
         state.view = { kind: 'withdraw', messageId: id, sourceTitle: message.publication.title, values: {} };
       } else if (name === 'feedback' && !therapist && roleOf(context) === 'guardian' && message.type === 'publication' && message.publication?.activity && !message.archived) {
         state.view = { kind: 'feedback', feedbackId: crypto.randomUUID(), sourceMessageId: id, expectedRevision: 0,
-          sourceTitle: message.publication.title, values: { date: localDay(), result: 'done', reaction: '', difficulty: '' } };
+          sourceTitle: message.publication.title, sourceActivity: publicActivity(message.publication.activity),
+          values: { date: localDay(), result: 'done', reaction: '', difficulty: '' } };
       } else if (name === 'edit-feedback' && roleOf(context) === 'guardian' && message.authorId === context.user.userId && message.feedback && !message.archived) {
         // Capture the current feedback revision and its complete file list as
         // one snapshot. An older message list cannot silently omit attachments.
@@ -1455,7 +1560,7 @@ export class CareUi {
           m.publication?.id === message.feedback.publicationId && !m.archived && !m.hidden && !m.deleted);
         if (!source) { this.fail({ code: 'PUBLICATION_CLOSED' }); return; }
         state.view = { kind: 'feedback', feedbackId: message.feedback.id, messageId: message.id, sourceMessageId: source.id,
-          expectedRevision: message.feedback.revision, sourceTitle: source.publication.title, values: { ...clone(message.feedback),
+          expectedRevision: message.feedback.revision, sourceTitle: source.publication.title, sourceActivity: publicActivity(source.publication.activity), values: { ...clone(message.feedback),
             ...(this.deliveryEnabled ? { attachments: clone(message.attachments ?? []) } : {}) } };
       } else if (name === 'review' && therapist && message.feedback) {
         const review = await this.api.feedbackReview(context.centerId, context.roomId, message.feedback.id, context.signal);
@@ -1466,7 +1571,7 @@ export class CareUi {
           expectedReviewVersion: review.reviewVersion, sourceBody: message.feedback.reaction, values: { note: review.note ?? '' } };
       } else return;
       this.display();
-    } catch (error) { if (this.current(context, epoch)) this.fail(error); }
+    } catch (error) { if (this.current(context, epoch) && openAllowed()) this.fail(error); }
     finally {
       if (state.opening === opening) {
         state.opening = null;

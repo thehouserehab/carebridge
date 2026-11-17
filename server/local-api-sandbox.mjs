@@ -19,6 +19,9 @@ import { migrate } from './migrate.mjs';
 import { createLocalApiListener } from './local-api-listener.mjs';
 import { createLocalSyntheticMedia } from './local-synthetic-media.mjs';
 import { createOwnedCleanupError } from './local-sandbox-cleanup.mjs';
+import { AiRecordDrafts } from './ai-record-drafts.mjs';
+import { AiConversations } from './ai-conversations.mjs';
+import { AiAudioNotes } from './ai-audio-notes.mjs';
 
 function sandboxPort(options) {
   if (!options || typeof options !== 'object' || Array.isArray(options) ||
@@ -67,6 +70,41 @@ async function seed(database, ids) {
 
 /** Synthetic-only HTTP: memory DB and a factory-owned temporary quarantine; no mail or worker. */
 export async function createLocalApiSandbox(options = {}) {
+  return createSandbox(options);
+}
+
+/** Explicit trusted injection; ordinary synthetic launchers cannot enable AI via env. */
+export async function createLocalAiApiSandbox({ port = 0, summaryProvider, chatProvider, audioProvider, maxCalls = 20 } = {}) {
+  if (!summaryProvider || !chatProvider) throw new TypeError('Both AI providers are required.');
+  return createSandbox({ port }, ({ records, conversations }) => ({
+    aiDrafts: new AiRecordDrafts({ records, provider: summaryProvider, maxCalls }),
+    aiConversations: new AiConversations({ conversations, provider: chatProvider, maxCalls }),
+    ...(audioProvider ? { aiAudioNotes: new AiAudioNotes({ records, provider: audioProvider, maxCalls: Math.min(maxCalls, 10) }) } : {}),
+  }));
+}
+
+async function createSandbox(options, createAiServices = null) {
+  return createOwnedSandbox(options, createAiServices);
+}
+
+// Dedicated prototype entry: no caller-provided paths, DBs, transports or media
+// factories. Normal synthetic/AI launchers remain quarantine-only.
+export async function createLocalPrototypeApiSandbox({ port = 0, summaryProvider, chatProvider, audioProvider, enableExternalAi = false } = {}) {
+  const aiMode = enableExternalAi === true ? 'openai' : 'fixture';
+  if (typeof enableExternalAi !== 'boolean' || audioProvider?.mode !== 'fixture' ||
+      ![summaryProvider, chatProvider].every(provider => provider?.mode === aiMode)) {
+    throw new TypeError('Prototype text providers must match the explicit external AI setting; audio remains a fixture.');
+  }
+  const { createPrototypeMedia } = await import('./prototype-media.mjs');
+  const { PrototypeAudioNotes } = await import('./prototype-audio-notes.mjs');
+  return createOwnedSandbox({ port }, ({ records, conversations }) => ({
+    aiDrafts: new AiRecordDrafts({ records, provider: summaryProvider, maxCalls: enableExternalAi ? 20 : 100 }),
+    aiConversations: new AiConversations({ conversations, provider: chatProvider, maxCalls: enableExternalAi ? 20 : 100 }),
+    aiAudioNotes: new PrototypeAudioNotes({ records, provider: audioProvider, maxCalls: 10 }),
+  }), createPrototypeMedia, aiMode);
+}
+
+async function createOwnedSandbox(options, createAiServices = null, prototypeMedia = null, prototypeAiMode = 'fixture') {
   const port = sandboxPort(options);
   const database = await PGlite.create(); // No path/options: memory-only, never DATABASE_URL.
   const credentials = [];
@@ -79,6 +117,7 @@ export async function createLocalApiSandbox(options = {}) {
   let media;
   let closePromise;
   let databaseClosing;
+  let aiServices = {};
   const close = () => {
     if (closePromise) return closePromise;
     // Drop this factory's references; this is not a claim of secure RAM zeroization.
@@ -90,7 +129,12 @@ export async function createLocalApiSandbox(options = {}) {
     closePromise = (async () => {
       // A deadline failure is NOT proof that handlers stopped using the DB or
       // files. Retain both on failure instead of racing destructive cleanup.
-      await listener?.close();
+      // Observe every shutdown rejection while aborting providers before the
+      // listener drains. Any failure retains the DB/files for a safe retry.
+      await Promise.all([
+        ...Object.values(aiServices).map(service => service.close()),
+        listener?.close(),
+      ]);
       // Detached admission must drain its actual job before releasing the DB.
       // Closing the memory mailbox prevents any late link from being retained.
       await passwordRecovery?.close();
@@ -123,7 +167,7 @@ export async function createLocalApiSandbox(options = {}) {
       goalId: `local-goal-${suffix}`, appointmentId: `local-appointment-${suffix}`,
     });
     await seed(database, ids);
-    media = await createLocalSyntheticMedia(database, ids.centerId);
+    media = await (prototypeMedia ?? createLocalSyntheticMedia)(database, ids.centerId);
     const auth = new Auth(database); // Production-default scrypt cost; no test-password shortcut.
     emailLogin = new LocalEmailLogin({ auth, key: randomBytes(32), mailbox: emailMailbox });
     const accountDelivery = new AccountDelivery({ auth, origin: 'https://carebridge.test', transport: invitations });
@@ -132,6 +176,7 @@ export async function createLocalApiSandbox(options = {}) {
     const conversations = new Conversations(database);
     const profiles = new Children(database);
     const records = new Records(database), feedback = new ActivityFeedback(database);
+    if (createAiServices) aiServices = createAiServices({ records, conversations });
     const goals = new Goals(database), appointments = new Appointments(database);
     const therapist = { centerId: ids.centerId, userId: ids.therapistId };
     await goals.save(therapist, { conversationId: ids.conversationId, goalId: ids.goalId,
@@ -150,10 +195,11 @@ export async function createLocalApiSandbox(options = {}) {
       conversationId: ids.conversationId, clientId: randomUUID(),
       body: '가상 자료로 연결을 확인하는 대화입니다. 실제 아동 정보는 입력하지 마세요.',
     });
-    listener = await createLocalApiListener({ port, services: { auth, accountDelivery, passwordRecovery, emailLogin, conversations, profiles, records, feedback, goals, appointments,
+    listener = await createLocalApiListener({ port, ...(prototypeMedia ? { screen: 'prototype', prototypeAiMode } : {}), services: { auth, accountDelivery, passwordRecovery, emailLogin, conversations, profiles, records, feedback, goals, appointments,
+      ...aiServices,
       memberProfiles: new MemberProfiles(database), relationships: new Relationships(database),
       careRecipientLinks: new CareRecipientLinks(database), primaryCommunicators: new PrimaryCommunicators(database),
-      mediaUploads: media.mediaUploads, mediaCleanup: media.mediaCleanup } });
+      mediaUploads: media.mediaUploads, mediaCleanup: media.mediaCleanup, ...(media.mediaAccess ? { mediaAccess: media.mediaAccess } : {}) } });
     const sandbox = { origin: listener.origin, ids, close };
     Object.defineProperties(sandbox, {
       credentials: { value: credentials },

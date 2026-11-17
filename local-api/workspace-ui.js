@@ -290,6 +290,17 @@ export function guardianRecordsMarkup(room) {
   return `<p class="muted small">치료사가 공유한 내용만 표시합니다. 전체 임상 기록은 공개되지 않아요.</p>${room.care.publications.map((m) => `<article class="shared-record" data-shared-message="${esc(m.id)}"><p class="small muted">${esc(m.publication.date)}</p><h3>${esc(m.publication.title)}</h3><p>${esc(m.publication.summary)}</p>
     <button type="button" data-open-room="${esc(room.conversationId)}" data-target-id="${esc(m.id)}">대화에서 보기${m.publication.activity ? ' · 활동 경험 남기기' : ''}</button></article>`).join('') || empty('현재 열람 가능한 공유 기록이 없습니다.')}`;
 }
+// These are the existing authorized publication snapshots, not clinical records
+// or inferred appointment matches. A date may contain more than one session.
+export function calendarReportsMarkup(room, period) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(period?.dateFrom ?? '') || !/^\d{4}-\d{2}-\d{2}$/.test(period?.dateTo ?? '')) return '';
+  const reports = room.care.publications.filter(message => message.type === 'publication' &&
+    message.conversationId === room.conversationId && !message.hidden && !message.deleted && !message.archived &&
+    message.publication?.date >= period.dateFrom && message.publication.date <= period.dateTo)
+    .slice().sort((a, b) => b.publication.date.localeCompare(a.publication.date) || a.id.localeCompare(b.id));
+  return `<section class="calendar-reports" data-calendar-reports><h3>날짜별 치료 보고서</h3><p class="small muted">치료사가 공유한 보고서만 표시해요. 같은 날짜에 여러 수업의 기록이 있을 수 있어요.</p>${reports.map(message =>
+    `<button type="button" class="list-link" data-calendar-report data-open-room="${esc(room.conversationId)}" data-target-id="${esc(message.id)}"><span class="small muted">${esc(message.publication.date)}</span><strong>${esc(message.publication.title)}</strong><span class="small">공유 보고서 보기 →</span></button>`).join('') || empty('이번 달에 공유된 보고서가 없습니다.')}</section>`;
+}
 export function childMarkup(room, role, period) {
   if (!room) return empty('아이를 선택해 주세요.');
   const p = room.profile;
@@ -302,5 +313,5 @@ export function childMarkup(room, role, period) {
     ${['guardian', 'therapist'].includes(role) ? `<section class="surface-card" data-testid="child-activities">${heading('공유 중인 가정 활동', '활동을 선택하면 대화에서 전체 안내와 주의사항을 확인할 수 있어요.')}${activityLinks(activityEntries(room), role)}</section>` : ''}
     <section class="surface-card" data-testid="child-goals">${heading('함께 확인할 목표')}${role === 'therapist' ? '<button type="button" data-goal-new>목표 추가</button>' : ''}${room.care.goals.map((goal) => `<article class="goal-row" data-goal-id="${esc(goal.id)}"><h3>${esc(goal.title)}</h3>${goal.description ? `<p>${esc(goal.description)}</p>` : ''}<p class="small muted">${goal.status === 'active' ? '진행 중' : goal.status === 'achieved' ? '달성' : '잠시 보류'}</p>${role === 'therapist' ? `<button type="button" data-goal-edit="${esc(goal.id)}">목표 수정</button>` : ''}</article>`).join('') || empty('등록된 목표가 없습니다.')}</section>
     <section class="surface-card" data-testid="child-appointments"><div class="period-head"><header class="section-head"><h2 data-schedule-heading tabindex="-1">${esc(childName(room))}의 일정</h2><p class="muted small">${esc(period.label)}</p></header><div class="actions">${role === 'therapist' ? '<button type="button" data-appointment-new>일정 추가</button>' : ''}<button type="button" data-month-shift="-1" aria-label="이전 달 일정">이전 달</button><button type="button" data-month-shift="1" aria-label="다음 달 일정">다음 달</button></div></div>
-    ${room.care.appointments.map((a) => appointmentMarkup(room, a, role)).join('') || empty('이번 조회 기간의 일정이 없습니다.')}<p class="small muted">기본정보는 센터 전용 화면에서 관리합니다. 다른 달로 옮긴 일정은 해당 월에서 확인해 주세요.</p></section>`;
+    ${room.care.appointments.map((a) => appointmentMarkup(room, a, role)).join('') || empty('이번 조회 기간의 일정이 없습니다.')}${role === 'guardian' ? calendarReportsMarkup(room, period) : ''}<p class="small muted">기본정보는 센터 전용 화면에서 관리합니다. 다른 달로 옮긴 일정은 해당 월에서 확인해 주세요.</p></section>`;
 }

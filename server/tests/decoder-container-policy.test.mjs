@@ -49,7 +49,7 @@ test('network ports devices mounts and shared host namespaces refused',() => {
     (state) => { state.NetworkSettings.Ports['8080/tcp'] = [{}]; } ]) { const state = fixture(); mutate(state); refused(() => checked(state)); }
 });
 test('decoder build permits only verified public sources and exact internal modules',async () => {
-  const dockerfile = await readFile(new URL('../decoder-test.Dockerfile',import.meta.url),'utf8');
+  const dockerfile = (await readFile(new URL('../decoder-test.Dockerfile',import.meta.url),'utf8')).replace(/\r\n/g,'\n');
   assert.ok(dockerfile.includes(`FROM ${DECODER_NODE_IMAGE} AS compiled`));
   for (const fixed of ['--disable-network','--disable-autodetect','--disable-everything','--no-autostart',
     'FCF986EA15E6E293A5644F10B4322F04D67658D8','8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e','libwebpmux',

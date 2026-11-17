@@ -352,6 +352,62 @@ function feedbackMediaFixture(api = {}, callbacks = {}) {
   return { ...fixture, get current() { return fixture.current; }, media, item };
 }
 
+function feedbackSaveControls(fixture) {
+  const submit = { type: 'submit', dataset: {}, closest: () => null }, input = { type: 'text', dataset: {}, closest: () => null };
+  const status = { hidden: true, textContent: '' }, retries = [];
+  const form = { querySelectorAll: () => [submit, input], querySelector: selector =>
+    selector === '[data-feedback-ready-status]' ? status : selector === '.care-submit' ? { append: button => retries.push(button) } : null };
+  const original = fixture.ui.dialog.querySelector;
+  fixture.ui.dialog.querySelector = selector => selector === 'form' ? form : original(selector);
+  fixture.ui.host = { ownerDocument: { createElement: () => ({ dataset: {} }) } };
+  fixture.ui.lockForm = () => CareUi.prototype.lockForm.call(fixture.ui);
+  return { submit, input, status, retries };
+}
+
+test('feedback save readiness is visible before submission and preserves text editing while attachments wait', () => {
+  const fixture = feedbackMediaFixture(), controls = feedbackSaveControls(fixture);
+  const ready = structuredClone(fixture.item.upload);
+  const cases = [null, { ...ready, state: 'inspecting' }, { ...ready, state: 'rejected' },
+    { ...ready, expired: true }, { ...ready, expiresAt: null }];
+  for (const upload of cases) {
+    fixture.item.upload = upload; fixture.ui.lockForm();
+    assert.equal(controls.submit.disabled, true);
+    assert.equal(controls.input.disabled, false);
+    assert.equal(controls.status.hidden, false);
+    assert(controls.status.textContent.length > 0);
+  }
+  fixture.item.upload = ready; fixture.ui.lockForm();
+  assert.equal(controls.submit.disabled, false); assert.match(controls.status.textContent, /준비 완료/);
+  fixture.item.uncertain = true; fixture.ui.lockForm(); assert.equal(controls.submit.disabled, true);
+  fixture.item.uncertain = false; fixture.item.cancelRequested = true; fixture.ui.lockForm(); assert.equal(controls.submit.disabled, true);
+  fixture.media.states.get(fixture.media.key).items = []; fixture.ui.lockForm();
+  assert.equal(controls.submit.disabled, false); assert.equal(controls.status.hidden, true);
+  fixture.media.clear();
+});
+
+test('feedback save includes existing attachments in the count limit and unlocks after an existing file is excluded', () => {
+  const fixture = feedbackMediaFixture(), controls = feedbackSaveControls(fixture);
+  fixture.state.view.values.attachments = Array.from({ length: 6 }, (_, i) =>
+    publicFile({ id: `12345678-1234-4234-8234-${String(i + 1).padStart(12, '0')}` }));
+  fixture.ui.lockForm(); assert.equal(controls.submit.disabled, true); assert.match(controls.status.textContent, /기존 파일/);
+  const id = fixture.state.view.values.attachments[0].id;
+  assert.equal(fixture.ui.removeFeedbackAttachment(id), true);
+  assert.equal(controls.submit.disabled, false); assert.equal(fixture.state.view.values.attachments.length, 5);
+  fixture.media.clear();
+});
+
+test('feedback pending receipt never recaptures attachment readiness and keeps the original retry available', () => {
+  const fixture = feedbackMediaFixture(), controls = feedbackSaveControls(fixture);
+  fixture.state.mutation.operation = Object.freeze({ kind: 'feedback', targetId: 'synthetic-feedback' });
+  fixture.media.selectionStatus = () => assert.fail('Frozen save must not re-evaluate a new selection');
+  fixture.media.captureFeedbackAttachments = () => assert.fail('Frozen save must not recapture bound IDs');
+  fixture.ui.lockForm();
+  assert.equal(controls.submit.disabled, true); assert.equal(controls.input.disabled, true);
+  assert.equal(controls.status.hidden, true); assert.equal(controls.retries.length, 1);
+  assert.equal(controls.retries[0].dataset.careAction, 'retry'); assert.equal(controls.retries[0].disabled, false);
+  fixture.media.clear();
+});
+
 test('feedback attachment save shares only its selected IDs and locks edits and file cancellation until acknowledgement', async () => {
   const gate = pendingResult(), calls = [];
   const fixture = feedbackMediaFixture({ feedbackSave: async (...args) => { calls.push(args); return gate.promise; } });
@@ -1676,4 +1732,164 @@ test('menu suspension invalidates pending record opening even when the same room
   complete({ ...base(), id: 'synthetic-record', conversationId: 'synthetic-room', revision: 1, referenceSources: [] }); await opening;
   assert.deepEqual(displayed, []); assert.equal(fixture.state.view, null); assert.equal(fixture.state.opening, null);
   assert.equal(fixture.state.loaded, true); assert.equal(fixture.state.goals[0].id, 'synthetic-goal');
+});
+
+const guidedActivity = () => ({ title: '<가상 활동>', instruction: '<img src=x onerror=bad>\n작성한 두 번째 줄 & 안내',
+  frequency: '<작성한 빈도>', caution: '<작성한 주의> & 확인', privateNote: 'PRIVATE-ACTIVITY-EXTRA' });
+const guidedPublication = () => ({ ...publicationMessage(), canReply: true, attachmentCount: 0, attachments: [],
+  publication: { ...publicationMessage().publication, date: '2026-11-12', title: '<공유 기록>', summary: '저장된 합성 요약', activity: guidedActivity() } });
+function guidedGuardianController(publication, api = {}) {
+  const fixture = controller(api);
+  fixture.setContext({ ...fixture.current, user: { userId: 'synthetic-guardian', centers: [{ id: 'synthetic-center', role: 'guardian' }] },
+    messages: [publication] });
+  fixture.ui.states.clear(); fixture.ui.key = JSON.stringify(['synthetic-guardian', fixture.current.centerId, fixture.current.roomId]);
+  fixture.ui.states.set(fixture.ui.key, fixture.state); fixture.state.view = null;
+  return fixture;
+}
+
+test('activity guides preserve authored lines as escaped labelled fields without inventing missing caution', () => {
+  const publication = guidedPublication(), html = renderCareMessage(publication, 'guardian', 'synthetic-guardian');
+  assert.match(html, /<dl\b[^>]*class="care-activity-guide"/);
+  assert.match(html, /<dt>방법<\/dt><dd data-activity-instruction>/);
+  assert.match(html, /<dt>빈도<\/dt><dd data-activity-frequency>/);
+  assert.match(html, /<dt>주의할 점<\/dt><dd data-activity-caution>/);
+  for (const text of ['&lt;가상 활동&gt;', '&lt;img src=x onerror=bad&gt;\n작성한 두 번째 줄 &amp; 안내',
+    '&lt;작성한 빈도&gt;', '&lt;작성한 주의&gt; &amp; 확인']) assert(html.includes(text));
+  assert(!html.includes('<img')); assert(!html.includes('PRIVATE-ACTIVITY-EXTRA'));
+  for (const caution of ['', undefined]) {
+    publication.publication.activity.caution = caution;
+    const withoutCaution = renderCareMessage(publication, 'guardian', 'synthetic-guardian');
+    assert(!withoutCaution.includes('data-activity-caution'));
+    assert(!withoutCaution.includes('<dt>주의할 점</dt>'));
+    assert(!withoutCaution.includes('주의사항 없음'));
+  }
+});
+
+test('publication media is presented as shared files without inventing a demonstration or bypassing the delivery boundary', () => {
+  const publication = { ...guidedPublication(), attachmentCount: 1, attachments: [publicFile({ name: '<합성 파일>.png' })] };
+  const html = renderCareMessage(publication, 'guardian', 'synthetic-guardian', true);
+  assert.match(html, /함께 공유한 사진·동영상 1개/); assert.match(html, /data-open-attachment=/);
+  assert.match(html, /&lt;합성 파일&gt;.png/);
+  for (const invented of ['시범 영상', '진행 방법 영상', '놀이 방법 영상', '<img', '<video']) assert(!html.includes(invented));
+  for (const delivery of [false, undefined]) assert(!renderCareMessage(publication, 'guardian', 'synthetic-guardian', delivery).includes('data-open-attachment'));
+  assert(!renderCareMessage({ ...publication, attachmentCount: 2 }, 'guardian', 'synthetic-guardian', true).includes('data-open-attachment'));
+  const empty = renderCareMessage(guidedPublication(), 'guardian', 'synthetic-guardian', true);
+  assert(!empty.includes('함께 공유한 사진·동영상'));
+  const ordinary = renderCareMessage({ ...syntheticText(), attachmentCount: 1, attachments: publication.attachments }, 'guardian', 'synthetic-guardian', true);
+  assert(!ordinary.includes('함께 공유한 사진·동영상'));
+});
+
+test('publication experience and reply actions are distinct while hidden, withdrawn and recipient boundaries remain intact', () => {
+  const publication = guidedPublication(), html = renderCareMessage(publication, 'guardian', 'synthetic-guardian');
+  const experience = html.match(/<button\b[^>]*data-care-action="feedback"[^>]*>/)?.[0];
+  assert(experience); assert.match(experience, /class="[^"]*\bprimary\b/);
+  assert.match(html, /data-care-action="reply"[^>]*>이 기록에 답하기<\/button>/);
+  const therapist = renderCareMessage(publication, 'therapist', 'synthetic-therapist');
+  assert(!therapist.includes('data-care-action="feedback"'));
+  assert(!renderCareMessage({ ...publication, canReply: false }, 'guardian', 'synthetic-guardian').includes('data-care-action="reply"'));
+  const noActivity = { ...publication, publication: { ...publication.publication, activity: null } };
+  assert(!renderCareMessage(noActivity, 'guardian', 'synthetic-guardian').includes('data-care-action="feedback"'));
+  for (const changed of [{ archived: true }, { hidden: true, body: '공유가 종료된 기록입니다.' }, { deleted: true, body: '삭제된 소식입니다.' }]) {
+    const limited = renderCareMessage({ ...publication, ...changed }, 'guardian', 'synthetic-guardian', true);
+    assert(!limited.includes('data-care-action="feedback"')); assert(!limited.includes('data-care-action="reply"'));
+    if (changed.hidden || changed.deleted) assert(!limited.includes('data-activity-instruction'));
+  }
+  assert.equal(renderCareMessage(publication, 'care_recipient', 'synthetic-recipient', true), '');
+  for (const message of [syntheticText(), feedbackMessage()])
+    assert.match(renderCareMessage(message, 'guardian', 'synthetic-guardian'), /data-care-action="reply"[^>]*>인용 답장<\/button>/);
+});
+
+test('new and edited feedback capture exactly four public activity fields outside editable values', async () => {
+  for (const editing of [false, true]) {
+    const publication = guidedPublication(), saved = feedbackMessage({ attachmentCount: 0, attachments: [] });
+    const fixture = guidedGuardianController(publication, { feedback: async () => saved });
+    fixture.current.messages.push(saved); const forms = captureForms(fixture);
+    await fixture.ui.handleAction(editing ? 'edit-feedback' : 'feedback', editing ? saved.id : publication.id);
+    const view = fixture.state.view, expected = Object.fromEntries(['title', 'instruction', 'frequency', 'caution']
+      .map(key => [key, publication.publication.activity[key]]));
+    assert.equal(view.kind, 'feedback'); assert.deepEqual(view.sourceActivity, expected);
+    assert.notEqual(view.sourceActivity, publication.publication.activity);
+    assert.equal(Object.hasOwn(view.values, 'sourceActivity'), false);
+    assert.equal(Object.hasOwn(view.values, 'activity'), false);
+    assert.match(forms.html, /<details\b[^>]*data-feedback-activity/);
+    assert.match(forms.html, /<summary>활동 안내 다시 보기<\/summary>/);
+    assert.match(forms.html, /data-activity-instruction/);
+    assert.match(forms.html, /&lt;공유 기록&gt;/); assert.match(forms.html, /&lt;가상 활동&gt;/);
+    assert(!forms.html.includes('PRIVATE-ACTIVITY-EXTRA')); assert(!forms.html.includes('<img'));
+    publication.publication.activity.instruction = 'LATER-SOURCE';
+    publication.publication.activity.title = 'LATER-TITLE';
+    fixture.ui.display();
+    assert.deepEqual(view.sourceActivity, expected);
+    assert(!forms.html.includes('LATER-SOURCE')); assert(!forms.html.includes('LATER-TITLE'));
+  }
+});
+
+test('activity guidance metadata never enters the feedback mutation or causes an automatic write', async () => {
+  const publication = guidedPublication(), gate = pendingResult(), calls = [];
+  const fixture = guidedGuardianController(publication, { feedbackSave: async (...args) => { calls.push(args); return gate.promise; } });
+  captureForms(fixture);
+  await fixture.ui.handleAction('feedback', publication.id);
+  assert.equal(calls.length, 0);
+  const view = fixture.state.view;
+  view.values.reaction = '직접 작성한 합성 반응'; view.values.difficulty = '직접 작성한 합성 어려움';
+  const form = { reportValidity: () => true, elements: [], querySelector: () => null, querySelectorAll: () => [] };
+  fixture.ui.dialog.querySelector = selector => selector === 'form' ? form : null;
+  fixture.ui.snapshot = () => {}; fixture.ui.lockForm = () => {};
+  const pending = fixture.ui.submit();
+  try {
+    const operation = fixture.state.mutation.operation;
+    assert.equal(calls.length, 1); assert.equal(operation.kind, 'feedback');
+    assert.deepEqual(Object.keys(operation.body.content).sort(), ['date', 'difficulty', 'reaction', 'result']);
+    assert.equal(operation.body.sourceMessageId, publication.id);
+    assert.equal(operation.body.content.reaction, view.values.reaction);
+    assert.equal(JSON.stringify(operation.body).includes('sourceActivity'), false);
+    assert.equal(JSON.stringify(operation.body).includes('작성한 두 번째 줄'), false);
+  } finally { gate.resolve({}); await pending; }
+});
+
+test('activity context retains its original snapshot through revalidation and disappears after confirmed source loss', async () => {
+  for (const reason of ['hidden', 'deleted', 'archived', 'NOT_FOUND', 'FORBIDDEN']) {
+    const publication = guidedPublication(); let lost = false;
+    const fixture = guidedGuardianController(publication, { message: async () => {
+      if (lost && ['NOT_FOUND', 'FORBIDDEN'].includes(reason)) throw new LocalApiError(reason);
+      return { ...publication, ...(lost ? { [reason]: true } : {}),
+        publication: { ...publication.publication, activity: { ...guidedActivity(), instruction: 'LATER-AUTHORIZED-SOURCE' } } };
+    } });
+    const forms = captureForms(fixture); await fixture.ui.handleAction('feedback', publication.id);
+    const view = fixture.state.view, snapshot = structuredClone(view.sourceActivity), originalHtml = forms.html;
+    assert.equal(await fixture.ui.guardView(fixture.current), true);
+    assert.deepEqual(view.sourceActivity, snapshot); assert.equal(forms.html, originalHtml);
+    lost = true; assert.equal(await fixture.ui.guardView(fixture.current), false);
+    assert.equal(fixture.state.view, null); assert.equal(forms.html, ''); assert.equal(forms.open, false);
+  }
+});
+
+test('failed activity-source revalidation hides guidance until authority recovers without replacing authored feedback', async () => {
+  const publication = guidedPublication(); let unavailable = true;
+  const fixture = guidedGuardianController(publication, { message: async () => {
+    if (unavailable) throw new LocalApiError('UNAVAILABLE');
+    return publication;
+  } });
+  const forms = captureForms(fixture); await fixture.ui.handleAction('feedback', publication.id);
+  const view = fixture.state.view, snapshot = structuredClone(view.sourceActivity);
+  view.values.reaction = '보존할 합성 반응';
+  assert.equal(await fixture.ui.guardView(fixture.current), false);
+  assert.equal(fixture.state.view, view); assert.equal(forms.open, false); assert.equal(forms.html, '');
+  assert.deepEqual(view.sourceActivity, snapshot);
+  unavailable = false; await fixture.ui.handleAction('resume');
+  assert.match(forms.html, /data-feedback-activity/); assert.match(forms.html, /보존할 합성 반응/);
+  assert.deepEqual(view.sourceActivity, snapshot);
+  fixture.ui.retainRooms(fixture.current.user.userId, fixture.current.centerId, []);
+  assert.equal(fixture.ui.states.size, 0); assert.equal(forms.html, '');
+});
+
+test('publication reply dialog uses the record-specific title while ordinary and feedback replies keep their titles', async () => {
+  for (const message of [guidedPublication(), syntheticText(), feedbackMessage({ attachmentCount: 0, attachments: [] })]) {
+    const fixture = guidedGuardianController(message, { message: async () => message });
+    const forms = captureForms(fixture); await fixture.ui.handleAction('reply', message.id);
+    assert.equal(fixture.state.view.kind, 'reply');
+    assert.equal(forms.displayed.at(-1).title, message.type === 'publication' ? '이 기록에 답하기' : '소식에 인용 답장');
+    assert.equal(fixture.state.view.messageId, message.id);
+    assert.equal(fixture.state.view.sourceType, message.type);
+  }
 });

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { studyChildEnvironment } from '../scripts/p0-study-policy.mjs';
 import { messageBrowserOptions } from './message-browser-policy.mjs';
-import { workspaceRoom, workspaceView, workspaceAccountAction } from './local-workspace-browser-helpers.mjs';
+import { workspaceRoom, workspaceView, workspaceAccountAction, workspaceChatAttachments } from './local-workspace-browser-helpers.mjs';
 import { syntheticVideoBytes } from './browser-media-fixture.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -36,6 +36,52 @@ async function bounded(promise) {
   })]); } finally { clearTimeout(timer); }
 }
 
+async function pickChatFiles(page, files, { keyboard = false } = {}) {
+  const chooserPromise = page.waitForEvent('filechooser');
+  const button = page.locator('[data-chat-attach]');
+  if (keyboard) { await button.focus(); await button.press('Enter'); }
+  else await button.click();
+  const chooser = await chooserPromise;
+  assert.equal(chooser.isMultiple(), true);
+  await chooser.setFiles(files);
+  return chooser;
+}
+
+async function attachmentGeometry(page) {
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  // A short desktop page remains scrollable. Mobile keeps the composer fixed
+  // inside its bounded conversation, so observe it without a corrective scroll.
+  if (page.viewportSize().width > 700) await page.locator('[data-chat-attach]').scrollIntoViewIfNeeded();
+  return page.evaluate(() => {
+    const inspect = selector => {
+      const node = document.querySelector(selector), rect = node.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height,
+        reachable: rect.width > 0 && rect.height > 0 && rect.left >= -1 && rect.top >= -1
+          && rect.right <= innerWidth + 1 && rect.bottom <= innerHeight + 1 && (hit === node || node.contains(hit)) };
+    };
+    return { width: innerWidth, height: innerHeight, pageWidth: document.documentElement.scrollWidth,
+      attach: inspect('[data-chat-attach]'), input: inspect('.composer textarea'), send: inspect('.composer button[type="submit"]'),
+      messages: inspect('[data-testid="message-list"]'), nav: inspect('.main-nav'),
+      mediaVisible: getComputedStyle(document.querySelector('[data-chat-media]')).display !== 'none' };
+  });
+}
+
+function assertAttachmentGeometry(value, open) {
+  const code = 'LOCAL_MEDIA_COMPOSER_LAYOUT';
+  try {
+    assert(value.pageWidth <= value.width + 1, code);
+    assert(value.attach.reachable && value.input.reachable && value.send.reachable, code);
+    assert(value.attach.width >= 43.5 && value.attach.height >= 43.5 && value.send.height >= 43.5, code);
+    assert(value.attach.right <= value.input.left + 1 && value.input.right <= value.send.left + 1, code);
+    assert.equal(value.mediaVisible, open, code);
+    if (value.width <= 700) {
+      assert(value.send.bottom <= value.nav.top + 1 && value.input.bottom <= value.nav.top + 1, code);
+      assert(value.messages.reachable && value.messages.height >= 44, code);
+    }
+  } catch (error) { error.mediaGeometry = value; throw error; }
+}
+
 export async function runLocalMediaBrowser(args = process.argv.slice(2)) {
   const options = messageBrowserOptions(args), source = await sources();
   for (const file of [options.module, options.executable]) assert((await lstat(file)).isFile());
@@ -47,6 +93,7 @@ export async function runLocalMediaBrowser(args = process.argv.slice(2)) {
     cleanup: { contextsClosed: false, browserStopped: false, sandboxesClosed: false, privateRootsRemoved: false },
     limitations: ['Synthetic quarantine upload only; no malware approval, metadata processing, authorized playback or attachment delivery.',
       'Memory-only PGlite plus owned private OS temporary bytes; no E drive, user browser, actual child data, hosted deployment or physical-device evidence.',
+      'Empty filechooser selection is tested; clicking the operating-system Cancel button is not automated.',
       'Lost responses are real committed HTTP responses deliberately withheld, not fabricated server results.'] };
   const save = (name, value) => writeFile(path.join(folder, name), JSON.stringify(value, null, 2));
   const ownership = { runId, testProcessId: process.pid, browserProcessId: null, finished: false };
@@ -74,13 +121,15 @@ export async function runLocalMediaBrowser(args = process.argv.slice(2)) {
       const base = `/api/local/centers/${ids.centerId}/conversations/${ids.conversationId}`;
       const result = { width, photoQuarantine: false, videoQuarantine: false, lostReserve: false, lostReceive: false,
         navigationPreserves: false, otherActorPrivate: false, cancelRetry: false, revocationWipes: false, nonSelectedRevocation: false,
-        keyboardFocus: false, noBindings: false, layout: false };
+        keyboardFocus: false, noBindings: false, layout: false, composerEntry: false, fileChooser: false,
+        collapsedSelectionPreserved: false, summaryFocusReturn: false, shortViewport: false, composerGeometry: [],
+        emptySelectionPreserved: false, sameFileReselected: false, roomSelectionIsolated: false };
       const actor = async (role) => {
         const context = await browser.newContext({ viewport: { width, height: 900 }, locale: 'ko-KR', serviceWorkers: 'block',
           isMobile: width <= 640, hasTouch: width <= 640, permissions: [], acceptDownloads: false }); contexts.add(context);
         await context.route('**/*', (route) => {
           const url = new URL(route.request().url());
-          const asset = ['/', '/favicon.ico', '/local-api/app.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/client.js', '/local-api/care-client.js', '/local-api/care-ui.js',
+          const asset = ['/', '/favicon.ico', '/local-api/app.js', '/local-api/ai-assistant-ui.js', '/local-api/ai-client.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/client.js', '/local-api/care-client.js', '/local-api/care-ui.js',
             '/local-api/workspace-ui.js', '/local-api/media-client.js', '/local-api/media-ui.js', '/local-api/media-viewer.js', '/local-api/styles.css',
             '/src/media-policy.js', '/src/record-fields.js', '/src/feedback-fields.js'].includes(url.pathname) && ['GET', 'HEAD'].includes(route.request().method());
           if (url.origin !== origin || (!asset && !url.pathname.startsWith('/api/local/')) || !['GET', 'POST'].includes(route.request().method())) {
@@ -98,10 +147,92 @@ export async function runLocalMediaBrowser(args = process.argv.slice(2)) {
       const therapist = await actor('therapist'), guardian = await actor('guardian');
       const page = therapist.page, panel = page.locator('[data-testid="media-upload-panel"]');
       const rows = panel.locator('[data-testid="media-upload-row"]');
-      await panel.locator('[data-media-details] > summary').click();
-      await panel.locator('input').setInputFiles([{ name: '가상사진-<표시검사>.png', mimeType: 'image/png', buffer: png },
-        { name: '가상영상.webm', mimeType: 'video/webm', buffer: syntheticVideoBytes() }]);
+      const attach = page.locator('[data-chat-attach]'), input = page.locator('.composer textarea');
+      const draft = '가상 첨부 시험: 접었다 다시 열어도 이 메시지 초안과 선택 파일을 유지합니다.';
+      phase = `${width}:COMPOSER_ENTRY`;
+      assert.equal(await attach.getAttribute('aria-expanded'), null);
+      assert.equal(await panel.isVisible(), false);
+      await input.fill(draft);
+      let inputNode = await input.elementHandle();
+      const initialGeometry = await attachmentGeometry(page); assertAttachmentGeometry(initialGeometry, false);
+      result.composerGeometry.push({ stage: 'initial-collapsed', ...initialGeometry });
+      phase = `${width}:FILE_CHOOSER`;
+      const selectedPhoto = { name: '가상사진-<표시검사>.png', mimeType: 'image/png', buffer: png };
+      // One composer activation must raise the native chooser, with no
+      // intervening summary or file-input activation.
+      await pickChatFiles(page, [selectedPhoto,
+        { name: '가상영상.webm', mimeType: 'video/webm', buffer: syntheticVideoBytes() }], { keyboard: width === 320 });
       await until(async () => await rows.count() === 2);
+      assert.equal(await panel.locator('input[type="file"]').count(), 1);
+      assert.equal(await panel.locator('input[type="file"]').getAttribute('aria-hidden'), 'true');
+      assert.equal(await panel.locator('input[type="file"]').getAttribute('tabindex'), '-1');
+      assert.equal(await input.inputValue(), draft); result.composerEntry = true;
+      result.fileChooser = true;
+      const selection = await rows.evaluateAll(nodes => nodes.map(node => ({ id: node.dataset.mediaId,
+        name: node.querySelector('.media-file-name').textContent })));
+      await until(async () => await attach.getAttribute('aria-label') === '사진·동영상 추가 · 선택 파일 2개');
+      assert.equal(await attach.locator('[data-chat-attachment-count]').textContent(), '2');
+      phase = `${width}:EMPTY_SELECTION_AND_RESELECT`;
+      await pickChatFiles(page, []);
+      assert.equal(await panel.locator('[data-media-details]').getAttribute('open'), '');
+      assert.equal(await input.inputValue(), draft);
+      assert.deepEqual(await rows.evaluateAll(nodes => nodes.map(node => ({ id: node.dataset.mediaId,
+        name: node.querySelector('.media-file-name').textContent }))), selection);
+      result.emptySelectionPreserved = true;
+      await pickChatFiles(page, selectedPhoto);
+      await until(async () => await rows.count() === 3);
+      assert.equal(await rows.nth(2).locator('.media-file-name').textContent(), selectedPhoto.name);
+      assert.notEqual(await rows.nth(2).getAttribute('data-media-id'), selection[0].id);
+      await rows.nth(2).locator('[data-media-action="cancel"]').click();
+      await until(async () => await rows.count() === 2);
+      assert.equal(await input.inputValue(), draft);
+      result.sameFileReselected = true;
+      assert(await inputNode.evaluate(node => node === document.querySelector('.composer textarea')));
+      await inputNode.dispose();
+      phase = `${width}:ROOM_SELECTION_ISOLATION`;
+      await workspaceRoom(page, extra.roomId);
+      assert.equal(await rows.count(), 0);
+      assert.equal(await input.inputValue(), '');
+      await input.fill('가상 두 번째 대화방의 독립 초안');
+      await workspaceRoom(page, ids.conversationId);
+      assert.equal(await input.inputValue(), draft);
+      assert.deepEqual(await rows.evaluateAll(nodes => nodes.map(node => ({ id: node.dataset.mediaId,
+        name: node.querySelector('.media-file-name').textContent }))), selection);
+      result.roomSelectionIsolated = true;
+      inputNode = await input.elementHandle();
+      phase = `${width}:COLLAPSE_PRESERVES_SELECTION`;
+      for (const height of [900, 420]) {
+        await page.setViewportSize({ width, height });
+        await workspaceChatAttachments(page, { open: false });
+        const closedGeometry = await attachmentGeometry(page); assertAttachmentGeometry(closedGeometry, false);
+        result.composerGeometry.push({ stage: `${height}-collapsed`, ...closedGeometry });
+        const closedShot = `${width}x${height}-attachments-collapsed.png`;
+        await page.screenshot({ path: path.join(folder, closedShot) }); report.screenshots.push(closedShot);
+        await workspaceChatAttachments(page, { keyboard: true });
+        const openGeometry = await attachmentGeometry(page); assertAttachmentGeometry(openGeometry, true);
+        result.composerGeometry.push({ stage: `${height}-expanded`, ...openGeometry });
+        assert(await inputNode.evaluate(node => node === document.querySelector('.composer textarea')));
+        // Switching rooms intentionally replaces the composer; disclosure
+        // changes within this room must retain its current textarea node.
+        assert.equal(await input.inputValue(), draft);
+        assert.deepEqual(await rows.evaluateAll(nodes => nodes.map(node => ({ id: node.dataset.mediaId,
+          name: node.querySelector('.media-file-name').textContent }))), selection);
+        if (width <= 700) assert(closedGeometry.messages.height > openGeometry.messages.height, 'LOCAL_MEDIA_COLLAPSE_RECLAIMS_HISTORY');
+        const openShot = `${width}x${height}-attachments-expanded.png`;
+        await page.screenshot({ path: path.join(folder, openShot) }); report.screenshots.push(openShot);
+      }
+      await page.setViewportSize({ width, height: 900 });
+      await panel.locator('[data-media-details] > summary').focus();
+      await panel.locator('[data-media-details] > summary').press('Enter');
+      await until(async () => await panel.locator('[data-media-details]').getAttribute('open') === null);
+      assert(await attach.evaluate(node => node === document.activeElement));
+      result.summaryFocusReturn = true;
+      await workspaceChatAttachments(page);
+      assert.equal(await input.inputValue(), draft);
+      assert.equal((await database.query('SELECT count(*)::int n FROM cb_media_uploads')).rows[0].n, 0);
+      assert.equal((await database.query('SELECT count(*)::int n FROM cb_messages')).rows[0].n, 1);
+      await inputNode.dispose();
+      result.collapsedSelectionPreserved = true; result.shortViewport = true;
       const photo = rows.nth(0), video = rows.nth(1);
       let reserveLost = false, received = 0, receiveLost = false;
       await therapist.context.route(`**${base}/uploads`, async (route) => {
@@ -168,7 +299,7 @@ export async function runLocalMediaBrowser(args = process.argv.slice(2)) {
       assert.equal((await readdir(sandbox.mediaRoot)).filter((name) => name.endsWith('.blob')).length, 0);
       result.cancelRetry = cancelLost;
       phase = `${width}:REVOKED`;
-      await panel.locator('input').setInputFiles({ name: '가상-권한회수.png', mimeType: 'image/png', buffer: png });
+      await pickChatFiles(page, { name: '가상-권한회수.png', mimeType: 'image/png', buffer: png });
       await until(async () => await rows.count() === 1);
       await rows.nth(0).locator('[data-media-action="upload"]').click();
       await until(async () => (await rows.nth(0).textContent()).includes('격리 보관됨'));
@@ -184,7 +315,7 @@ export async function runLocalMediaBrowser(args = process.argv.slice(2)) {
       await workspaceRoom(page, ids.conversationId); assert.equal(await rows.count(), 0);
       assert(!(await page.locator('body').textContent()).includes('가상-권한회수.png'));
       result.nonSelectedRevocation = true;
-      await panel.locator('input').setInputFiles({ name: '가상-현재권한회수.png', mimeType: 'image/png', buffer: png });
+      await pickChatFiles(page, { name: '가상-현재권한회수.png', mimeType: 'image/png', buffer: png });
       await until(async () => await rows.count() === 1);
       await database.query('UPDATE cb_participants SET active=false WHERE center_id=$1 AND conversation_id=$2 AND user_id=$3',
         [ids.centerId, ids.conversationId, ids.therapistId]);
@@ -202,7 +333,7 @@ export async function runLocalMediaBrowser(args = process.argv.slice(2)) {
     }
     report.sourceAfter = await sources(); assert.equal(report.sourceAfter.sha256, source.sha256);
     assert.equal(report.errors.length, 0); assert.equal(report.unexpectedRequests.length, 0); report.passed = true;
-  } catch (error) { report.failure = { phase, message: String(error.message).slice(0, 700) }; }
+  } catch (error) { report.failure = { phase, message: String(error.message).slice(0, 700), geometry: error.mediaGeometry }; }
   finally {
     try {
       for (const context of contexts) await bounded(context.close()); contexts.clear(); report.cleanup.contextsClosed = true;

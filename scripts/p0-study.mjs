@@ -10,6 +10,41 @@ import { STUDY_STORAGE_KEY, STUDY_MARKER, TASK_A, TASK_B, LEGACY_NOTE, sha256,
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const readState = (page) => page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STUDY_STORAGE_KEY);
+export const studyContextOptions = (width) => ({ viewport: width === null ? null : { width, height: 1000 },
+  locale: 'ko-KR', timezoneId: 'Asia/Seoul', serviceWorkers: 'block' });
+
+// Browser geometry only: no form content, URLs, storage or human task metrics.
+// DPR and visualViewport.scale are observations, not inferred OS/browser zoom.
+export function readStudyWindowMetrics() {
+  const numeric = (value) => typeof value === 'number' && Number.isFinite(value) ? value : null;
+  const dimensions = (width, height) => ({ width: numeric(width), height: numeric(height) });
+  const viewport = window.visualViewport, screen = window.screen;
+  return {
+    inner: dimensions(window.innerWidth, window.innerHeight),
+    outer: dimensions(window.outerWidth, window.outerHeight),
+    visualViewport: viewport ? { ...dimensions(viewport.width, viewport.height), scale: numeric(viewport.scale),
+      offsetLeft: numeric(viewport.offsetLeft), offsetTop: numeric(viewport.offsetTop) } : null,
+    screen: screen ? { ...dimensions(screen.width, screen.height), availWidth: numeric(screen.availWidth),
+      availHeight: numeric(screen.availHeight) } : null,
+    devicePixelRatio: numeric(window.devicePixelRatio),
+  };
+}
+
+export async function captureStudyWindow(page, version, stage) {
+  const observation = { version, stage, at: new Date().toISOString() };
+  let timer;
+  try {
+    const metrics = await Promise.race([page.evaluate(readStudyWindowMetrics), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('STUDY_WINDOW_UNAVAILABLE')), 2000);
+    })]);
+    return { ...observation, status: 'measured', metrics };
+  } catch {
+    // Closing the test window or interrupting it can make the final sample
+    // unavailable. Never reuse the start sample or turn that into a success.
+    return { ...observation, status: 'unavailable', metrics: null };
+  } finally { clearTimeout(timer); }
+}
+
 async function fill(page, name, value) {
   const input = page.locator(`#edit-form [name="${name}"]`);
   for (const details of await input.locator('xpath=ancestor::details').all())
@@ -123,7 +158,7 @@ export async function runStudy(args = process.argv.slice(2)) {
   const snapshots = await captureStudyVersions(root);
   const runId = randomUUID(), folder = fileURLToPath(new URL(`../test-results/p0-study-${runId}/`, import.meta.url));
   await mkdir(folder, { recursive: true });
-  const servers = {}, contexts = [], problems = [], checks = [];
+  const servers = {}, contexts = [], problems = [], checks = [], interactivePages = [];
   const result = { runId, at: new Date().toISOString(), mode: options.interactive ? 'interactive-preparation' : 'automatic-preparation',
     humanValidation: 'not-recorded-by-this-tool', humanMetricsCollected: false, physicalDeviceValidation: 'not-run',
     versions: Object.fromEntries(Object.entries(snapshots).map(([key, snapshot]) => [key, snapshot.manifest])), checks, problems,
@@ -138,7 +173,7 @@ export async function runStudy(args = process.argv.slice(2)) {
     result.browserVersion = browser.version();
     const newContext = async (version, width) => {
       const origin = servers[version].origin;
-      const context = await browser.newContext({ viewport: { width, height: 1000 }, locale: 'ko-KR', timezoneId: 'Asia/Seoul', serviceWorkers: 'block' });
+      const context = await browser.newContext(studyContextOptions(width));
       contexts.push(context);
       await context.route('**/*', async (route) => {
         const request = route.request(), url = new URL(request.url());
@@ -192,9 +227,13 @@ export async function runStudy(args = process.argv.slice(2)) {
     delete result.activeCheck;
     if (options.interactive) {
       await browser.close();
-      browser = await chromium.launch({ headless: false, executablePath, env: studyChildEnvironment(), timeout: 30_000 });
+      browser = await chromium.launch({ headless: false, executablePath, args: ['--start-maximized'],
+        env: studyChildEnvironment(), timeout: 30_000 });
+      result.windowEnvironment = { viewportMode: 'native-window', humanMetricsCollected: false, observations: [] };
       for (const version of options.versions) {
-        const context = await newContext(version, 1440);
+        // A fixed emulated viewport can exceed the visible Windows client area
+        // even after maximizing. Human sessions must follow the actual window.
+        const context = await newContext(version, null);
         await context.addInitScript(seedStudyStorage, { origin: servers[version].origin, fixture, task: options.task,
           storageKey: STUDY_STORAGE_KEY, marker: STUDY_MARKER });
         const page = await context.newPage(); await page.goto(servers[version].origin);
@@ -205,13 +244,17 @@ export async function runStudy(args = process.argv.slice(2)) {
         page.on('load', () => { void label().catch(() => {}); });
         await label();
         pages.push(page);
+        interactivePages.push({ page, version });
       }
       assert.deepEqual(problems, [], 'Human session must start error-free');
+      await pages[0].bringToFront();
+      for (const { page, version } of interactivePages)
+        result.windowEnvironment.observations.push(await captureStudyWindow(page, version, 'start'));
       console.log(`가상 PC 비교 준비됨. 과제 ${options.task}; 순서 ${options.versions.join(' → ')}; 시험일 ${day}.`);
       console.log('docs/p0-user-validation.md의 과제와 관측 규칙을 사용하세요. 실제 자료 입력/첨부 금지. 시간·이동 수·이해도는 진행자가 별도 기록합니다.');
+      console.log('시험 창은 실제 창 크기를 따릅니다. 시작·종료 화면 크기 기록은 환경 확인용이며 사람의 수행 결과가 아닙니다.');
       if (options.task === 'B') console.log(`기존 화면의 내부 메모에는 다음 내용을 남깁니다:\n${LEGACY_NOTE}`);
       console.log(`버전 체크섬/시험 준비 기록: ${folder}results.json`);
-      await pages[0].bringToFront();
       prompt = createInterface({ input: process.stdin, output: process.stdout });
       await Promise.race([
         prompt.question('체험을 마쳤으면 터미널에서 Enter. 두 시험 창과 가상 저장소가 종료됩니다. '),
@@ -226,6 +269,8 @@ export async function runStudy(args = process.argv.slice(2)) {
     throw error;
   } finally {
     prompt?.close();
+    for (const { page, version } of interactivePages)
+      result.windowEnvironment.observations.push(await captureStudyWindow(page, version, 'end'));
     for (const context of contexts) await context.close().catch(() => {});
     const cleanupFailures = [];
     if (browser) await browser.close().catch(() => cleanupFailures.push('browser-close'));

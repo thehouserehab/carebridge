@@ -15,7 +15,7 @@ import { verifyHomeNewsLayout } from './local-home-news-browser-helpers.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const code = 'LOCAL_P0_STUDY_PREPARATION_FAILED';
 const hash = value => createHash('sha256').update(value).digest('hex');
-const assets = new Set(['/', '/favicon.ico', '/local-api/app.js', '/local-api/care-recipient-client.js', '/local-api/client.js', '/local-api/care-client.js',
+const assets = new Set(['/', '/favicon.ico', '/local-api/app.js', '/local-api/ai-assistant-ui.js', '/local-api/ai-client.js', '/local-api/care-recipient-client.js', '/local-api/client.js', '/local-api/care-client.js',
   '/local-api/care-ui.js', '/local-api/workspace-ui.js', '/local-api/styles.css', '/local-api/media-client.js',
   '/local-api/media-ui.js', '/local-api/media-viewer.js', '/local-api/approval-pending-ui.js',
   '/src/media-policy.js', '/src/record-fields.js', '/src/feedback-fields.js']);
@@ -133,7 +133,7 @@ export async function runLocalP0StudyBrowser(args = process.argv.slice(2)) {
     limitations: ['This is current local-api preparation only; no baseline UI or design-improvement percentage is measured.',
       'A/B preserve the same task information, not identical storage, full conversation history or experimental conditions.',
       'Initial material is seeded separately by domain services; seeding is not UI task completion. The sandbox notice remains.',
-      'C verifies the exact shared summary and reply location, not a human explanation or comprehension score.',
+      'C verifies shared summary/activity visibility, preview agreement and distinct unsent reply forms, not human comprehension.',
       'Fresh Chromium 390/1440 viewports, home-only 320x740 and record-only 320x640/844x390 checks are not physical-device, VoiceOver or human usability evidence.',
       'Record action checks exercise browser keyboard focus only, not physical mobile keyboards or an accessibility audit.',
       'Synthetic accounts, authenticated loopback HTTP and memory-only PGlite only; no E drive, Docker, external access or native media.',
@@ -296,7 +296,7 @@ export async function runLocalP0StudyBrowser(args = process.argv.slice(2)) {
         const entry = await inspectSummary(who);
         await capture(who, `${name}-entry`);
         assert(entry.lines.length > 0 && entry.lines[0].visible, `${code}:SUMMARY_ENTRY`);
-        await card(who).getByRole('button', { name: '인용 답장', exact: true }).click({ trial: true });
+        await card(who).locator(`[data-care-action="reply"][data-message-id="${publication.messageId}"]`).click({ trial: true });
         const afterTrial = await inspectSummary(who); await capture(who, name);
         assert.equal(afterTrial.lines.length, entry.lines.length, code);
         const seen = new Set(), reading = []; let current = afterTrial, wheelUsed = false;
@@ -323,6 +323,89 @@ export async function runLocalP0StudyBrowser(args = process.argv.slice(2)) {
         assert.equal(seen.size, entry.lines.length, `${code}:SUMMARY_LINES`);
         await capture(who, `${name}-readable`);
         return { entry, afterTrial, reading, wheelUsed, allLinesObserved: true };
+      };
+      const verifyActivityReading = async (host, expected) => {
+        const activity = host.locator('.care-activity');
+        assert.equal(await activity.count(), 1, code);
+        assert.equal(await activity.locator('h3').textContent(), expected.title, code);
+        const fields = [];
+        for (const [key, label] of [['title', null], ['instruction', '방법'], ['frequency', '빈도'], ['caution', '주의할 점']]) {
+          const field = activity.locator(key === 'title' ? 'h3' : `[data-activity-${key}]`);
+          assert.equal(await field.count(), 1, code);
+          assert.equal(await field.textContent(), expected[key], code);
+          if (label) assert.equal(await field.locator('xpath=preceding-sibling::dt').textContent(), label, code);
+          // Scroll with the browser's normal layout behavior, then observe the
+          // actual text through every clipping ancestor. DOM presence alone is
+          // not evidence that the activity instructions can be read.
+          await field.scrollIntoViewIfNeeded();
+          const observed = await field.evaluate(node => {
+            let clip = { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
+            for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+              const rect = parent.getBoundingClientRect(), style = getComputedStyle(parent);
+              if (/(auto|scroll|hidden|clip)/.test(style.overflowX)) {
+                clip.left = Math.max(clip.left, rect.left + parent.clientLeft);
+                clip.right = Math.min(clip.right, rect.left + parent.clientLeft + parent.clientWidth);
+              }
+              if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) {
+                clip.top = Math.max(clip.top, rect.top + parent.clientTop);
+                clip.bottom = Math.min(clip.bottom, rect.top + parent.clientTop + parent.clientHeight);
+              }
+            }
+            const range = document.createRange(); range.selectNodeContents(node);
+            const lines = [...range.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0).map(rect => {
+              const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+              return { visible: rect.left >= clip.left - 1 && rect.right <= clip.right + 1
+                && rect.top >= clip.top - 1 && rect.bottom <= clip.bottom + 1 && !!hit && (hit === node || node.contains(hit)) };
+            });
+            return { lineCount: lines.length, allLinesVisible: lines.length > 0 && lines.every(line => line.visible) };
+          });
+          assert(observed.allLinesVisible, `${code}:ACTIVITY_${key.toUpperCase()}_VISIBLE`);
+          fields.push({ key, ...observed });
+        }
+        return { fields, exactSharedValues: true };
+      };
+      const verifyPublicationResponseRoutes = async who => {
+        const source = await checkPublication(who), activity = fixture.expected.activity;
+        const feedback = card(who).locator('[data-care-action="feedback"]');
+        const reply = card(who).locator('[data-care-action="reply"]');
+        assert.equal(await feedback.textContent(), '활동 경험 남기기', code);
+        assert.equal(await reply.textContent(), '이 기록에 답하기', code);
+        assert.equal(await feedback.getAttribute('data-message-id'), publication.messageId, code);
+        assert.equal(await reply.getAttribute('data-message-id'), publication.messageId, code);
+        assert(await feedback.evaluate(node => node.classList.contains('primary')), code);
+        assert(!await reply.evaluate(node => node.classList.contains('primary')), code);
+        assert((await card(who).locator('.care-publication-response').textContent()).includes('방법이 궁금하면'), code);
+        await feedback.click(); await dialog(who).locator('[data-care-form="feedback"]').waitFor();
+        assert.equal(await dialog(who).locator('#care-dialog-title').textContent(), '활동 경험 남기기', code);
+        assert((await dialog(who).locator('.care-feedback-context').textContent()).includes(source.publication.title), code);
+        const guide = dialog(who).locator('[data-feedback-activity]');
+        assert.equal(await guide.getAttribute('open'), null, code);
+        assert.equal(await guide.locator('input,textarea,select,button').count(), 0, code);
+        await guide.locator(':scope > summary').focus(); await guide.locator(':scope > summary').press('Enter');
+        assert.notEqual(await guide.getAttribute('open'), null, code);
+        const feedbackReading = await verifyActivityReading(guide, activity);
+        assert.equal(await input(who, 'reaction').inputValue(), '', code);
+        assert.equal(await input(who, 'difficulty').inputValue(), '', code);
+        assert.equal(await dialog(who).locator('[name="body"]').count(), 0, code);
+        await capture(who, 'shared-activity-feedback-guide');
+        await dialog(who).locator('[data-care-action="discard"]').click(); await dialog(who).waitFor({ state: 'hidden' });
+        const [replySourceResponse] = await Promise.all([
+          who.page.waitForResponse(response => response.url() === `${origin}${base}/messages/${publication.messageId}`
+            && response.request().method() === 'GET' && response.status() === 200),
+          reply.click(),
+        ]);
+        const replySource = (await replySourceResponse.json()).message;
+        assert.equal(replySource.id, publication.messageId, code);
+        assert.equal(replySource.publication.id, publication.publicationId, code);
+        await dialog(who).locator('[data-care-form="reply"]').waitFor();
+        assert.equal(await dialog(who).locator('#care-dialog-title').textContent(), '이 기록에 답하기', code);
+        assert.equal(await dialog(who).locator('blockquote').textContent(), source.publication.title, code);
+        assert.equal(await input(who, 'body').inputValue(), '', code);
+        assert.equal(await dialog(who).locator('[name="result"],[name="reaction"],[name="difficulty"]').count(), 0, code);
+        await capture(who, 'shared-record-question-reply');
+        await dialog(who).locator('[data-care-action="discard"]').click(); await dialog(who).waitFor({ state: 'hidden' });
+        assert.equal(writes.length, 0, code);
+        return { samePublication: true, distinctForms: true, feedbackReading, replySourceFetched: true, noSubmission: true };
       };
       const saveTask = async (who, kind, buttonName) => {
         const [response] = await Promise.all([who.page.waitForResponse(response => {
@@ -506,11 +589,40 @@ export async function runLocalP0StudyBrowser(args = process.argv.slice(2)) {
           await homePublication(who, ' '); await checkPublication(who);
           result.summaryReading = await verifySummaryReading(who, 'shared-summary');
         });
+        await step(`${prefix}:SHARED_ACTIVITY_READING`, async () => {
+          result.activityReading = await verifyActivityReading(card(who), fixture.expected.activity);
+          await capture(who, 'shared-activity-readable');
+        });
+        await step(`${prefix}:DISTINCT_PUBLICATION_RESPONSE_ROUTES`, async () => {
+          result.responseRoutes = await verifyPublicationResponseRoutes(who);
+        });
         result.apiRead = true;
         await step(`${prefix}:SUMMARY_RELOAD_REOPEN`, async () => {
           await who.page.reload(); await homeReady(who.page); await homePublication(who); await checkPublication(who);
           result.summaryReadingReopened = await verifySummaryReading(who, 'shared-summary-reopened');
+          result.activityReadingReopened = await verifyActivityReading(card(who), fixture.expected.activity);
           await guardianBoundary(who);
+        });
+        const therapist = await step(`${prefix}:PREVIEW_THERAPIST_LOGIN`, () => actor('therapist'));
+        await step(`${prefix}:SHARED_ACTIVITY_PREVIEW_AGREEMENT`, async () => {
+          await workspaceRecords(therapist.page, room.conversationId);
+          const [previewResponse] = await Promise.all([
+            therapist.page.waitForResponse(response => response.url() === `${origin}${base}/records/${fixture.records.r1}/preview`
+              && response.request().method() === 'GET' && response.status() === 200),
+            therapist.page.locator(`[data-care-action="preview-record"][data-record-id="${fixture.records.r1}"]`).click(),
+          ]);
+          const preview = (await previewResponse.json()).preview;
+          assert.equal(preview.recordId, fixture.records.r1, code);
+          assert.equal(preview.summary, fixture.expected.summary, code);
+          assert.deepEqual(preview.activity, fixture.expected.activity, code);
+          assert.deepEqual(preview.recipientIds, [ids.guardianId], code);
+          await dialog(therapist).locator('[data-care-form="publish"]').waitFor();
+          assert.equal(await dialog(therapist).locator('.care-share-preview > p:not(.eyebrow)').textContent(), fixture.expected.summary, code);
+          result.activityPreviewReading = await verifyActivityReading(dialog(therapist).locator('.care-share-preview'), fixture.expected.activity);
+          assert.equal(await input(therapist, 'confirmed').isChecked(), false, code);
+          await capture(therapist, 'shared-activity-preview-agreement');
+          await dialog(therapist).locator('[data-care-action="discard"]').click(); await dialog(therapist).waitFor({ state: 'hidden' });
+          result.previewMatchesPublication = true;
         });
         assert.equal(writes.length, 0, code);
       }

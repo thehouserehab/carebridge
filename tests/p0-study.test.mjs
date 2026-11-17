@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm';
 import { BASELINE_COMMIT, PUBLIC_ASSET, STUDY_STORAGE_KEY, STUDY_MARKER, TASK_B, LEGACY_NOTE,
   sha256, studyChildEnvironment, studyOptions, seedStudyStorage } from '../scripts/p0-study-policy.mjs';
 import { publicSnapshot, serveStudySnapshot, captureWorkingSnapshot } from '../scripts/p0-study-snapshots.mjs';
+import { studyContextOptions, readStudyWindowMetrics, captureStudyWindow } from '../scripts/p0-study.mjs';
 import { mkdtemp,mkdir,writeFile,readFile,rm,realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join,resolve,relative,isAbsolute } from 'node:path';
@@ -50,6 +51,55 @@ test('study child environment excludes DB/auth/proxy/debug and app settings', ()
     DATABASE_URL: 'exclude', VERCEL_TOKEN: 'exclude', HTTP_PROXY: 'exclude', NODE_OPTIONS: 'exclude',
     PLAYWRIGHT_MODULE: 'exclude', PLAYWRIGHT_BROWSERS_PATH: 'exclude', APP_URL: 'exclude', AWS_SECRET_ACCESS_KEY: 'exclude' }),
   { Path: 'synthetic-path', SystemRoot: 'synthetic-windows', TEMP: 'synthetic-temp' });
+});
+
+test('automatic study sizes stay fixed while human contexts follow the actual window', () => {
+  for (const width of [1440, 390]) assert.deepEqual(studyContextOptions(width), {
+    viewport: { width, height: 1000 }, locale: 'ko-KR', timezoneId: 'Asia/Seoul', serviceWorkers: 'block',
+  });
+  assert.deepEqual(studyContextOptions(null), {
+    viewport: null, locale: 'ko-KR', timezoneId: 'Asia/Seoul', serviceWorkers: 'block',
+  });
+});
+
+test('window observation records native geometry without reading participant content or inferring zoom', () => {
+  const window = { innerWidth: 1536, innerHeight: 729, outerWidth: 1536, outerHeight: 824,
+    visualViewport: { width: 1536, height: 729, scale: 1, offsetLeft: 0, offsetTop: 0 },
+    screen: { width: 1536, height: 864, availWidth: 1536, availHeight: 824 }, devicePixelRatio: 1.25 };
+  for (const key of ['document', 'location', 'localStorage', 'sessionStorage'])
+    Object.defineProperty(window, key, { get() { throw new Error('Participant content must not be read'); } });
+  const metrics = JSON.parse(JSON.stringify(runInNewContext(`(${readStudyWindowMetrics.toString()})()`, { window })));
+  assert.deepEqual(metrics, { inner: { width: 1536, height: 729 }, outer: { width: 1536, height: 824 },
+    visualViewport: { width: 1536, height: 729, scale: 1, offsetLeft: 0, offsetTop: 0 },
+    screen: { width: 1536, height: 864, availWidth: 1536, availHeight: 824 }, devicePixelRatio: 1.25 });
+  assert.equal(Object.hasOwn(metrics, 'zoom'), false);
+});
+
+test('missing or invalid browser geometry stays unknown instead of fabricating environment success', () => {
+  const metrics = JSON.parse(JSON.stringify(runInNewContext(`(${readStudyWindowMetrics.toString()})()`, {
+    window: { innerWidth: 1280, innerHeight: 600, outerWidth: NaN, outerHeight: Infinity,
+      devicePixelRatio: 'private-string', visualViewport: null, screen: undefined },
+  })));
+  assert.deepEqual(metrics, { inner: { width: 1280, height: 600 }, outer: { width: null, height: null },
+    visualViewport: null, screen: null, devicePixelRatio: null });
+});
+
+test('start/end window samples use fresh measurements and preserve a closed-window end as unavailable', async () => {
+  let count = 0;
+  const page = { async evaluate(reader) {
+    assert.equal(reader, readStudyWindowMetrics);
+    return { inner: { width: 1280, height: ++count === 1 ? 700 : 600 } };
+  } };
+  const start = await captureStudyWindow(page, 'baseline', 'start');
+  const end = await captureStudyWindow(page, 'baseline', 'end');
+  assert.equal(start.status, 'measured'); assert.equal(start.metrics.inner.height, 700);
+  assert.equal(end.status, 'measured'); assert.equal(end.metrics.inner.height, 600);
+  assert.equal(start.stage, 'start'); assert.equal(end.stage, 'end');
+  assert.equal(Number.isFinite(Date.parse(start.at)), true);
+  assert.equal(Object.hasOwn(end, 'duration'), false);
+  const closed = await captureStudyWindow({ async evaluate() { throw new Error('SYNTHETIC_PRIVATE_BROWSER_ERROR'); } }, 'baseline', 'end');
+  assert.deepEqual({ ...closed, at: null }, { version: 'baseline', stage: 'end', at: null, status: 'unavailable', metrics: null });
+  assert(!JSON.stringify(closed).includes('SYNTHETIC_PRIVATE_BROWSER_ERROR'));
 });
 
 test('public allowlist denies private files, nested paths, query/encoding and traversal', () => {

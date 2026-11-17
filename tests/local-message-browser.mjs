@@ -109,7 +109,7 @@ export async function runLocalMessageBrowser(args = process.argv.slice(2)) {
         contexts.add(context);
         await context.route('**/*', async (route) => {
           const request = route.request(), requested = new URL(request.url());
-          const asset = ['/', '/favicon.ico', '/local-api/client.js', '/local-api/app.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/care-client.js',
+          const asset = ['/', '/favicon.ico', '/local-api/client.js', '/local-api/app.js', '/local-api/ai-assistant-ui.js', '/local-api/ai-client.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/care-client.js',
             '/local-api/care-ui.js', '/local-api/workspace-ui.js', '/local-api/styles.css', '/local-api/media-client.js', '/local-api/media-ui.js', '/local-api/media-viewer.js', '/src/media-policy.js', '/src/record-fields.js', '/src/feedback-fields.js'].includes(requested.pathname) && ['GET', 'HEAD'].includes(request.method());
           const primaryRead = request.method() === 'GET' && requested.pathname === `/api/local/centers/${ids.centerId}/primary-communicator` &&
             [...requested.searchParams].length === 1 && requested.searchParams.get('conversationId') === ids.conversationId;
@@ -286,6 +286,7 @@ export async function runLocalMessageBrowser(args = process.argv.slice(2)) {
       assert.equal(await row(therapist, reply.id).locator('.message-quote').innerText(), originalBody);
       assert.deepEqual(referenceSnapshot((await record(recordId)).referenceSources[0]), pinned);
       await action(therapist, 'edit-record', recordId, 'record-id');
+      await reveal(reference(therapist, original.id));
       assert((await dialog(therapist).innerText()).includes(originalBody)); assert(!(await dialog(therapist).innerText()).includes(editedBody));
       await advance(`${width}:CURRENT_TEXT_REFERENCE`);
       const savedBeforeCurrentRead = await record(recordId);
@@ -381,6 +382,7 @@ export async function runLocalMessageBrowser(args = process.argv.slice(2)) {
       assert.deepEqual(referenceSnapshot((await record(recordId)).referenceSources[0]), pinned); result.selfHide = true;
       await advance(`${width}:HIDDEN_CURRENT_REFERENCE_DENIED`);
       await action(therapist, 'edit-record', recordId, 'record-id');
+      await reveal(reference(therapist, original.id));
       const hiddenRecord = await record(recordId);
       await fill(therapist, 'performed', '가상 숨긴 원문과 별도로 보존할 관찰');
       const hiddenInputs = await recordInput(therapist), hiddenReference = reference(therapist, original.id);
@@ -409,7 +411,9 @@ export async function runLocalMessageBrowser(args = process.argv.slice(2)) {
       assert.equal(tombstone.canEdit, false); assert.equal(tombstone.canDeleteAll, false);
       assert.equal(removedQuote.body, replyBody); assert.equal(removedQuote.quote.hidden, true); assert.equal(removedQuote.quote.body, '삭제된 소식입니다.');
       assert.deepEqual(referenceSnapshot((await record(recordId)).referenceSources[0]), pinned);
-      await action(therapist, 'edit-record', recordId, 'record-id'); assert((await dialog(therapist).innerText()).includes(originalBody));
+      await action(therapist, 'edit-record', recordId, 'record-id');
+      await reveal(reference(therapist, original.id));
+      assert((await dialog(therapist).innerText()).includes(originalBody));
       await advance(`${width}:DELETED_CURRENT_REFERENCE_DENIED`);
       const deletedRecord = await record(recordId), deletedInputs = await recordInput(therapist);
       const deletedReference = reference(therapist, original.id);

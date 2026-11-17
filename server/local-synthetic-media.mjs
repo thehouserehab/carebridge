@@ -26,7 +26,7 @@ async function boundedDrain(pending) {
   } finally { clearTimeout(timer); }
 }
 
-async function configure(database, centerId) {
+async function configure(database, centerId, limits = LOCAL_SYNTHETIC_MEDIA_LIMITS) {
   const userId = `local-policy-${randomUUID()}`;
   await database.transaction(async (tx) => {
     // The bootstrap identity has no login account or room participation and
@@ -36,7 +36,7 @@ async function configure(database, centerId) {
     await tx.query("INSERT INTO cb_memberships(center_id,user_id,role,active) VALUES ($1,$2,'center',true)", [centerId, userId]);
     const policy = new MediaResourcePolicy({ transaction: (work) => work(tx) });
     await policy.configure({ centerId, userId }, {
-      expectedRevision: 0, acceptingUploads: true, ...LOCAL_SYNTHETIC_MEDIA_LIMITS,
+      expectedRevision: 0, acceptingUploads: true, ...limits,
     });
     await tx.query('DELETE FROM cb_memberships WHERE center_id=$1 AND user_id=$2', [centerId, userId]);
     await tx.query('DELETE FROM cb_users WHERE id=$1', [userId]);
@@ -45,10 +45,17 @@ async function configure(database, centerId) {
 
 /** A factory-owned temporary quarantine. Never accepts a caller-supplied path. */
 export async function createLocalSyntheticMedia(database, centerId) {
+  return createOwnedSyntheticMedia(database, centerId);
+}
+
+// Trusted in-process composition only. The default caller remains quarantine-only;
+// a dedicated prototype factory may reuse the same owned temporary storage.
+export async function createOwnedSyntheticMedia(database, centerId, createServices = null, limits = LOCAL_SYNTHETIC_MEDIA_LIMITS) {
+  if (createServices !== null && typeof createServices !== 'function') throw new TypeError('Invalid synthetic media factory.');
   if (!database?.transaction || typeof centerId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(centerId)) {
     throw new TypeError('A synthetic transactional database and center are required.');
   }
-  await configure(database, centerId);
+  await configure(database, centerId, limits);
   const base = resolve(await realpath(tmpdir()));
   const root = resolve(await mkdtemp(join(base, PREFIX)));
   const identity = await lstat(root, { bigint: true });
@@ -100,7 +107,7 @@ export async function createLocalSyntheticMedia(database, centerId) {
       openVerified: async (...args) => { await assertRoot(); return store.openVerified(...args); },
       remove: async (key) => { await assertRoot(); ownedKeys.add(key); return store.remove(key); },
     };
-    const service = new MediaUploads(database, trackedStore, {
+    const service = createServices ? null : new MediaUploads(database, trackedStore, {
       preparation: null, ttlMilliseconds: 900000, leaseMilliseconds: 15000, operationTimeoutMilliseconds: 8000,
     });
     const track = (work) => {
@@ -113,9 +120,12 @@ export async function createLocalSyntheticMedia(database, centerId) {
     // No inspect/open/bind method: quarantine-only is also an injected-service
     // boundary, not just an omitted UI button. Existing authorization stays in
     // MediaUploads for every call, including cancellation and status retries.
-    const mediaUploads = Object.freeze(Object.fromEntries(['reserve', 'get', 'receive', 'cancel'].map((method) =>
-      [method, (...args) => track(() => service[method](...args))])));
-    const mediaCleanup = () => track(() => service.cleanup());
+    const custom = createServices ? await createServices(database, trackedStore) : null;
+    const methods = custom ? ['reserve', 'get', 'getTransferState', 'receive', 'cancel', 'open'] : ['reserve', 'get', 'receive', 'cancel'];
+    const target = custom?.mediaUploads ?? service;
+    const mediaUploads = Object.freeze(Object.fromEntries(methods.map((method) =>
+      [method, (...args) => track(() => target[method](...args))])));
+    const mediaCleanup = () => track(() => custom ? custom.mediaCleanup() : service.cleanup());
     const close = () => {
       if (closePromise) return closePromise;
       closing = true;
@@ -128,7 +138,7 @@ export async function createLocalSyntheticMedia(database, centerId) {
       void closePromise.catch(() => { closePromise = undefined; });
       return closePromise;
     };
-    const result = { mediaUploads, mediaCleanup, close };
+    const result = { mediaUploads, mediaCleanup, close, ...(custom?.mediaAccess ? { mediaAccess: custom.mediaAccess } : {}) };
     Object.defineProperty(result, 'root', { value: root });
     return Object.freeze(result);
   } catch (error) {

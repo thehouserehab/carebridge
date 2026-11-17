@@ -57,8 +57,8 @@ test('relay creation imports no ambient or synthetic DB credentials into its Doc
   assert.equal(environment.CAREBRIDGE_FIXTURE_PASSWORD,undefined);
 });
 test('relay image build context includes only its fixed peer and no source tree, secrets or dependencies',async()=>{
-  const docker=await readFile(new URL('../clamav-relay-test.Dockerfile',import.meta.url),'utf8');
-  const ignore=await readFile(new URL('../clamav-relay-test.Dockerfile.dockerignore',import.meta.url),'utf8');
+  const docker=(await readFile(new URL('../clamav-relay-test.Dockerfile',import.meta.url),'utf8')).replace(/\r\n/g,'\n');
+  const ignore=(await readFile(new URL('../clamav-relay-test.Dockerfile.dockerignore',import.meta.url),'utf8')).replace(/\r\n/g,'\n');
   assert.equal(ignore.trim(),'**\n!server/\n!server/clamav-relay-peer-test.mjs');
   assert.match(docker,/^FROM docker\.io\/library\/node@sha256:[a-f0-9]{64}$/m);assert.equal(/^RUN /m.test(docker),false);
   assert.equal(docker.match(/^COPY /gm)?.length,1);

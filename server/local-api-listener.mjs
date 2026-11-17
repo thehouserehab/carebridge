@@ -8,6 +8,9 @@ import { AccountDelivery } from './account-delivery.mjs';
 import { LocalPasswordRecovery } from './local-password-recovery.mjs';
 import { LocalEmailLogin } from './local-email-login.mjs';
 import { isSyntheticHttpsTransport } from './synthetic-https-transport.mjs';
+import { AiRecordDrafts } from './ai-record-drafts.mjs';
+import { AiConversations } from './ai-conversations.mjs';
+import { AiAudioNotes } from './ai-audio-notes.mjs';
 
 const HOST = '127.0.0.1';
 // Media drain permanently closes a MediaAccess lifetime. A new HTTPS owner may
@@ -37,6 +40,11 @@ const STATIC_FILES = Object.freeze([
   ['/local-api/styles.css', 'styles.css', 'text/css; charset=utf-8'],
   ['/local-api/care-client.js', 'care-client.js', 'text/javascript; charset=utf-8'],
   ['/local-api/care-ui.js', 'care-ui.js', 'text/javascript; charset=utf-8'],
+  ['/local-api/ai-client.js', 'ai-client.js', 'text/javascript; charset=utf-8'],
+  ['/local-api/ai-assistant-ui.js', 'ai-assistant-ui.js', 'text/javascript; charset=utf-8'],
+  ['/local-api/audio-notes-client.js', 'audio-notes-client.js', 'text/javascript; charset=utf-8'],
+  ['/local-api/audio-notes-ui.js', 'audio-notes-ui.js', 'text/javascript; charset=utf-8'],
+  ['/src/audio-note-contract.js', '../src/audio-note-contract.js', 'text/javascript; charset=utf-8'],
   ['/local-api/workspace-ui.js', 'workspace-ui.js', 'text/javascript; charset=utf-8'],
   ['/local-api/operations-client.js', 'operations-client.js', 'text/javascript; charset=utf-8'],
   ['/local-api/care-recipient-client.js', 'care-recipient-client.js', 'text/javascript; charset=utf-8'],
@@ -63,7 +71,7 @@ const QUARANTINE_MARKER = '<html lang="ko" data-media-mode="quarantine-only">';
 const PREPARED_MARKER = '<html lang="ko" data-media-mode="prepared-delivery">';
 const SERVICE_NAMES = ['auth', 'conversations', 'profiles', 'memberProfiles', 'relationships', 'records', 'feedback', 'goals', 'appointments',
   'mediaUploads', 'mediaCleanup', 'mediaAccess', 'mediaMaintenance', 'accountDelivery', 'passwordRecovery', 'emailLogin',
-  'careRecipientLinks', 'primaryCommunicators'];
+  'careRecipientLinks', 'primaryCommunicators', 'aiDrafts', 'aiConversations', 'aiAudioNotes'];
 
 function snapshot(value, allowed) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
@@ -79,11 +87,14 @@ function snapshot(value, allowed) {
 }
 
 function configuration(input) {
-  const options = snapshot(input, ['port', 'services', 'screen']);
+  const options = snapshot(input, ['port', 'services', 'screen', 'prototypeAiMode']);
   const port = Object.hasOwn(options, 'port') ? options.port : 0;
   const screen = Object.hasOwn(options, 'screen') ? options.screen : 'quarantine';
+  const prototypeAiMode = Object.hasOwn(options, 'prototypeAiMode') ? options.prototypeAiMode : 'fixture';
+  if ((Object.hasOwn(options, 'prototypeAiMode') && screen !== 'prototype') ||
+      !['fixture', 'openai'].includes(prototypeAiMode)) throw new TypeError('Invalid prototype AI mode.');
   if (!Number.isInteger(port) || (port !== 0 && (port < 1024 || port > 65535)) ||
-      !['quarantine', 'api-only', 'prepared'].includes(screen)) throw new TypeError('Invalid local listener port or screen.');
+      !['quarantine', 'api-only', 'prepared', 'prototype'].includes(screen)) throw new TypeError('Invalid local listener port or screen.');
   const services = snapshot(options.services, SERVICE_NAMES);
   if (!['login', 'authenticate', 'logout'].every((key) => typeof services.auth?.[key] === 'function') ||
       !['inbox', 'list', 'sendText', 'markRead'].every((key) => typeof services.conversations?.[key] === 'function') ||
@@ -91,17 +102,23 @@ function configuration(input) {
       (Object.hasOwn(services, 'accountDelivery') && !(services.accountDelivery instanceof AccountDelivery)) ||
       (Object.hasOwn(services, 'passwordRecovery') && !(services.passwordRecovery instanceof LocalPasswordRecovery)) ||
       (Object.hasOwn(services, 'emailLogin') && (!(services.emailLogin instanceof LocalEmailLogin) || !services.emailLogin.usesAuth(services.auth))) ||
+      (Object.hasOwn(services, 'aiDrafts') && !(services.aiDrafts instanceof AiRecordDrafts)) ||
+      (Object.hasOwn(services, 'aiConversations') && !(services.aiConversations instanceof AiConversations)) ||
+      (Object.hasOwn(services, 'aiAudioNotes') && !(services.aiAudioNotes instanceof AiAudioNotes)) ||
       (Object.hasOwn(services, 'mediaAccess') && !(services.mediaAccess instanceof MediaAccess)) ||
       (services.mediaAccess && screen === 'quarantine') ||
-      (screen === 'prepared' && !(services.mediaAccess instanceof MediaAccess)) ||
+      (['prepared', 'prototype'].includes(screen) && !(services.mediaAccess instanceof MediaAccess)) ||
       (Object.hasOwn(services, 'mediaMaintenance') && (services.mediaMaintenance !== 'worker' ||
         !services.mediaAccess || services.mediaCleanup !== undefined))) throw new TypeError('Invalid local listener services.');
-  return { port, screen, services: Object.freeze(services) };
+  if (screen === 'prototype' && prototypeAiMode === 'openai' && (!services.aiDrafts || !services.aiConversations)) {
+    throw new TypeError('OpenAI prototype requires both text AI services.');
+  }
+  return { port, screen, prototypeAiMode, services: Object.freeze(services) };
 }
 
 function securityHeaders(response, screen) {
   response.setHeader('Cache-Control', 'no-store');
-  response.setHeader('Content-Security-Policy', screen === 'prepared' ? PREPARED_CSP : CSP);
+  response.setHeader('Content-Security-Policy', ['prepared', 'prototype'].includes(screen) ? PREPARED_CSP : CSP);
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('X-Frame-Options', 'DENY');
   response.setHeader('Referrer-Policy', 'no-referrer');
@@ -158,19 +175,26 @@ export async function createSyntheticHttpsApiListener(input) {
 async function createApiListener(input, transport) {
   // Capture options and the service map before loading assets or opening a port.
   // The service instances remain caller-owned; no arbitrary handler is injected.
-  const { port, screen, services } = configuration(input);
+  const { port, screen, prototypeAiMode, services } = configuration(input);
   const assets = screen !== 'api-only'
     ? new Map(await Promise.all([...STATIC_FILES, ...(services.accountDelivery || services.passwordRecovery || services.emailLogin ? ACCOUNT_FILES : []),
       ...(services.emailLogin ? EMAIL_LOGIN_FILES : []),
       ...(services.accountDelivery ? INVITATION_FILES : []),
       ...(services.passwordRecovery ? RECOVERY_FILES : [])].map(async ([url, filename, type]) => {
       let body = await readFile(new URL(`../local-api/${filename}`, import.meta.url));
-      if (screen === 'prepared' && url === '/') {
+      if (['prepared', 'prototype'].includes(screen) && url === '/') {
         const html = body.toString('utf8');
         // Only a fixed trusted build marker selects prepared UI. Browser URLs,
         // request headers and query strings cannot enable this server mode.
         if (html.split(QUARANTINE_MARKER).length !== 2) throw new Error('Invalid prepared screen asset.');
         body = Buffer.from(html.replace(QUARANTINE_MARKER, PREPARED_MARKER));
+      }
+      if (screen === 'prototype' && url === '/') {
+        const notice = prototypeAiMode === 'openai'
+          ? '프로토타입 시연 · 가상 자료만 사용합니다. AI 대화와 선택한 기록 요약은 OpenAI로 전송되며 비용이 발생할 수 있습니다. 사진·영상·녹음은 제공된 샘플만 사용하며 녹음 정리와 파일 검사는 시연 응답입니다.'
+          : '프로토타입 시연 · 제공된 가상 사진·영상만 사용합니다. AI와 파일 검사는 시연 응답이며 외부 API를 호출하지 않습니다.';
+        body = Buffer.from(body.toString('utf8').replace('<html lang="ko"', `<html lang="ko" data-prototype-mode="synthetic" data-ai-mode="${prototypeAiMode}"`)
+          .replace(/<p data-storage-notice>[^<]*<\/p>/, `<p data-storage-notice>${notice}</p>`));
       }
       if (services.accountDelivery && url === '/') {
         body = Buffer.from(body.toString('utf8').replace('<html lang="ko"', '<html lang="ko" data-invitations-mode="synthetic"'));
@@ -180,6 +204,9 @@ async function createApiListener(input, transport) {
       }
       if (services.emailLogin && url === '/') {
         body = Buffer.from(body.toString('utf8').replace('<html lang="ko"', '<html lang="ko" data-email-login-mode="synthetic"'));
+      }
+      if (services.aiAudioNotes && url === '/') {
+        body = Buffer.from(body.toString('utf8').replace('<html lang="ko"', '<html lang="ko" data-audio-notes-mode="synthetic"'));
       }
       if (transport?.mode === 'private-wifi' && url === '/') {
         body = Buffer.from(body.toString('utf8')

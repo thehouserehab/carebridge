@@ -18,7 +18,7 @@ const code = 'NATIVE_PREPARED_MEDIA_BROWSER_FAILED';
 const uuid = (v) => typeof v === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(v);
 const id = (v) => typeof v === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(v);
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const assets = new Set(['/', '/favicon.ico', '/local-api/client.js', '/local-api/app.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/styles.css',
+const assets = new Set(['/', '/favicon.ico', '/local-api/client.js', '/local-api/app.js', '/local-api/ai-assistant-ui.js', '/local-api/ai-client.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/styles.css',
   '/local-api/care-client.js', '/local-api/care-ui.js', '/local-api/workspace-ui.js', '/local-api/media-client.js',
   '/local-api/media-ui.js', '/local-api/media-viewer.js', '/local-api/goal-client.js', '/local-api/appointment-client.js',
   '/local-api/self-profile-ui.js', '/local-api/self-profile-client.js', '/src/context-fields.js', '/src/profile-fields.js',
@@ -354,12 +354,18 @@ export async function exercisePreparedMediaBrowser({ origin, centerId, conversat
       }
       const panel = replySource ? replyDialog.locator('[data-reply-upload]') : guardian.page.getByTestId('media-upload-panel');
       const details = panel.locator('[data-media-details]');
-      if (await details.getAttribute('open') === null) await panel.locator('[data-media-details] > summary').click();
+      if (replySource && await details.getAttribute('open') === null) await panel.locator('[data-media-details] > summary').click();
       const filename = sample.filename ?? sample.fileName ?? (index === 0
         ? '가상사진-<img src=x onerror=globalThis.__careNativeXss=1>-긴이름검사-사진첨부.png'
         : `가상영상-길고자세한파일이름도생략없이확인하는검증-보호자치료사연결-준비된원본영상.${sample.type === 'video/mp4' ? 'mp4' : 'webm'}`);
       assert(typeof filename === 'string' && filename.length <= 255 && !/[\x00-\x1f\x7f/\\]/.test(filename), code);
-      await panel.locator('input[type="file"]').setInputFiles({ name: filename, mimeType: sample.type, buffer: sample.bytes });
+      const selectedFile = { name: filename, mimeType: sample.type, buffer: sample.bytes };
+      if (replySource) await panel.locator('input[type="file"]').setInputFiles(selectedFile);
+      else {
+        const picker = guardian.page.waitForEvent('filechooser');
+        await guardian.page.locator('[data-chat-attach]').click();
+        await (await picker).setFiles(selectedFile);
+      }
       const row = panel.getByTestId('media-upload-row').filter({ hasText: filename });
       await row.waitFor(); assert.equal(await row.locator('.account').textContent(), filename, code);
       assert.equal(await row.locator('img,video,script').count(), 0, code);

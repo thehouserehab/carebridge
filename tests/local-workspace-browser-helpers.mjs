@@ -19,6 +19,27 @@ export async function workspaceView(page, view) {
   await showWorkspaceView(page, view);
 }
 
+// Open the upload details through the visible direct picker, returning an empty
+// selection. This is not an assertion about clicking an OS Cancel button.
+// The native summary still closes details without changing selected files.
+export async function workspaceChatAttachments(page, { open = true, keyboard = false } = {}) {
+  const button = page.locator('[data-chat-attach]');
+  const panel = page.getByTestId('media-upload-panel');
+  await button.waitFor({ state: 'visible' });
+  assert.equal(await button.getAttribute('type'), 'button', 'LOCAL_WORKSPACE_ATTACHMENT_BUTTON_TYPE');
+  assert.equal(await button.getAttribute('aria-controls'), await panel.getAttribute('id'), 'LOCAL_WORKSPACE_ATTACHMENT_CONTROL');
+  const details = panel.locator('[data-media-details]');
+  if ((await details.getAttribute('open') !== null) !== open) {
+    const control = open ? button : details.locator(':scope > summary');
+    const selection = open ? page.waitForEvent('filechooser') : null;
+    if (keyboard) { await control.focus(); await control.press('Enter'); }
+    else await control.click();
+    if (selection) await (await selection).setFiles([]);
+  }
+  await page.waitForFunction(open => document.querySelector('[data-testid="media-upload-panel"] [data-media-details]')?.open === open, open);
+  await panel.waitFor({ state: open ? 'visible' : 'hidden' });
+}
+
 // Account actions share a native disclosure in the clinical workspace. The
 // center workspace still exposes ordinary visible buttons. Use the same user
 // path for both; never force a hidden control or alter the disclosure in JS.

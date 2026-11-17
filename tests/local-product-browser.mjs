@@ -127,7 +127,7 @@ export async function runLocalProductBrowser(args = process.argv.slice(2)) {
         contexts.add(context);
         await context.route('**/*', async (route) => {
           const request = route.request(), requested = new URL(request.url());
-          const asset = ['/', '/favicon.ico', '/local-api/app.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/client.js', '/local-api/care-client.js',
+          const asset = ['/', '/favicon.ico', '/local-api/app.js', '/local-api/ai-assistant-ui.js', '/local-api/ai-client.js', '/local-api/care-recipient-client.js', '/local-api/approval-pending-ui.js', '/local-api/client.js', '/local-api/care-client.js',
             '/local-api/care-ui.js', '/local-api/workspace-ui.js', '/local-api/styles.css', '/local-api/media-client.js', '/local-api/media-ui.js', '/local-api/media-viewer.js', '/src/media-policy.js', '/src/record-fields.js', '/src/feedback-fields.js'].includes(requested.pathname) && ['GET', 'HEAD'].includes(request.method());
           const primaryRead = request.method() === 'GET' && requested.pathname === `/api/local/centers/${ids.centerId}/primary-communicator` &&
             [...requested.searchParams].length === 1 && [ids.conversationId, extra.conversationId].includes(requested.searchParams.get('conversationId'));

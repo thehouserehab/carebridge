@@ -101,6 +101,8 @@ function fixture(role = 'therapist') {
     escape: String, childName: room => room.profile.name, childMarkup: () => 'synthetic child panel',
     renderInbox() {}, renderHome() {}, announce() {}, loadingMarkup: name => `loading ${name}`,
     care: { update() { calls.renders++; if (context.connected) fillCare(); }, suspend() { calls.suspended++; careHost.replaceChildren(); } },
+    // AI owns a separate surface; this fixture verifies care-host preservation.
+    aiAssistant: { sync() {}, close() {} }, aiChildPicker: null, aiEntryPending: null, closeAiChildPicker() {},
     viewer: { suspend() { calls.viewerSuspended++; } }, media: { update() {} },
     chatLayout: { disconnect() {} }, parkMedia() {}, updateComposer() {}, fitChatViewport() {},
     restoreMessagePosition() {}, readingPositions: new Map(), draftKey: () => 'synthetic-scope',

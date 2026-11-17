@@ -81,6 +81,10 @@ test('closed listener inputs reject host/path/callback/service injection and get
     { services: base, handler() {} }, { services: base, cookieName: 'cb_local_aaaaaaaaaaaaaaaa' },
     ...[undefined, 80, 1023, 65536, -1, 0.5, '0', NaN].map((port) => ({ services: base, port })),
     { services: base, screen: 'prepared' }, { services: base, screen: undefined },
+    { services: base, prototypeAiMode: 'openai' },
+    { services: base, screen: 'prototype', prototypeAiMode: null },
+    { services: base, screen: 'prototype', prototypeAiMode: 'arbitrary' },
+    { services: { ...base, mediaAccess: access(async () => opened()) }, screen: 'prototype', prototypeAiMode: 'openai' },
     { services: { ...base, database: {} } }, { services: { ...base, origin: 'http://127.0.0.1:1234' } },
     { services: { ...base, cookieName: 'cb_local_aaaaaaaaaaaaaaaa' } },
     { services: { ...base, mediaAccess: { open() {} } }, screen: 'api-only' },
@@ -88,6 +92,7 @@ test('closed listener inputs reject host/path/callback/service injection and get
     { services: { ...base, mediaMaintenance: 'worker' }, screen: 'api-only' },
     { services: { ...base, auth: {} } }, { services: Object.create({ ...base }) },
     Object.defineProperty({ services: base }, 'port', { get() { assert.fail('No option getter may execute.'); } }),
+    Object.defineProperty({ services: base, screen: 'prototype' }, 'prototypeAiMode', { get() { assert.fail('No AI-mode getter may execute.'); } }),
     { services: Object.defineProperty({ ...base }, 'auth', { get() { assert.fail('No service-map getter may execute.'); } }) },
     { services: base, [Symbol('unexpected')]: true },
   ]) await assert.rejects(createLocalApiListener(input), TypeError);

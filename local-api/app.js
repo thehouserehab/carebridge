@@ -6,6 +6,7 @@ import { MediaUploadUi } from './media-ui.js';
 import { MediaViewer } from './media-viewer.js';
 import { ApprovalPendingUi, assignedCenters } from './approval-pending-ui.js';
 import { CareRecipientApiClient, recipientTextMessage } from './care-recipient-client.js';
+import { AiAssistantUi } from './ai-assistant-ui.js';
 import { escapeHtml as escape, roleName, childName, workspacePeriod, formatWorkspaceTime, orderedNews, homeMarkup, childMarkup, guardianRecordsMarkup,
   loadingMarkup, historySelector, stableHistorySelector, captureMessagePosition, restoreMessagePosition, visibleMessageRows,
   scrollMessageTarget, roomParticipantsMarkup, reconcileNewsList, bindNewsActivation, workspaceMenus, reconcilePrimaryCommunicator,
@@ -142,7 +143,76 @@ function restoreCareAfterMediaClose(source) {
   care.update(context);
 }
 
+const aiAssistant = new AiAssistantUi({ api, getContext,
+  onApplySummary: (draft, preview, context, operation) => care.applyAiSummary(draft, preview, context, operation),
+  onApplyAudio: (draft, selection, context, operation) => care.applyAiAudio(draft, selection, context, operation),
+  onDismiss: restoreChatAfterAiDismissal,
+  onError: message => announce(message) });
+
+let aiEntryPending = null, aiChildPicker = null, aiChildPickerSnapshot = '';
+const aiSelectionSnapshot = () => JSON.stringify([generation, user?.userId, centerId,
+  rooms.map(room => [room.conversationId, room.profile?.name])]);
+function closeAiChildPicker(restoreFocus = false) {
+  const wasOpen = aiChildPicker?.open;
+  aiChildPicker?.close(); aiChildPicker?.remove(); aiChildPicker = null; aiChildPickerSnapshot = '';
+  if (restoreFocus && wasOpen) app.querySelector('[data-action="ai-assistant"]')?.focus({ preventScroll: true });
+}
+async function openAiForRoom(id) {
+  if (aiEntryPending || phase !== 'workspace' || !connected || !rooms.some(room => room.conversationId === id)) return;
+  const expectedUser = user.userId, expectedCenter = centerId, expectedView = activeView;
+  const returnFocus = app.querySelector('[data-action="ai-assistant"]');
+  const opening = {};
+  closeAiChildPicker(); aiEntryPending = opening; renderSurfaces();
+  try {
+    // Load the same authenticated child snapshot used by records/chat, while
+    // preserving the page where the user opened AI. Loading is not a read receipt.
+    if (roomId !== id || !profile) {
+      if (!await selectRoom(id, expectedView)) return;
+    }
+    if (phase !== 'workspace' || !connected || user?.userId !== expectedUser || centerId !== expectedCenter ||
+        activeView !== expectedView || roomId !== id) return;
+    // Restore the enabled trigger before mounting the modal so closing even a
+    // still-loading AI dialog can return keyboard focus to the home button.
+    if (aiEntryPending === opening) aiEntryPending = null;
+    renderSurfaces(); returnFocus?.focus({ preventScroll: true });
+    await aiAssistant.open();
+    if (aiAssistant.dialog?.open && returnFocus?.isConnected) aiAssistant.returnFocus = returnFocus;
+  } catch (error) {
+    if (phase === 'workspace' && user?.userId === expectedUser && centerId === expectedCenter) denied(error);
+  } finally {
+    if (aiEntryPending === opening) aiEntryPending = null;
+    if (phase === 'workspace') renderSurfaces();
+  }
+}
+async function openAiFromWorkspace() {
+  if (aiEntryPending || phase !== 'workspace' || !connected) return;
+  if (!rooms.length) { announce('연결된 아이가 있어야 AI 도우미를 사용할 수 있어요.'); return; }
+  const selected = rooms.find(room => room.conversationId === roomId);
+  if (selected || rooms.length === 1) return openAiForRoom((selected ?? rooms[0]).conversationId);
+  if (aiChildPicker?.open) return;
+  // A home with several children has no implicit AI owner. Ask for the child
+  // instead of silently attaching the first child's history or saved records.
+  const dialog = document.createElement('dialog'); dialog.className = 'ai-assistant ai-child-picker';
+  dialog.setAttribute('aria-labelledby', 'ai-child-title');
+  dialog.innerHTML = `<header class="ai-head"><div><p class="eyebrow">AI 도우미</p><h2 id="ai-child-title">어느 아이를 도울까요?</h2></div><button type="button" data-ai-child-close aria-label="아이 선택 닫기">닫기</button></header>
+    <div class="ai-child-options">${rooms.map(room => `<button type="button" data-ai-child="${escape(room.conversationId)}"><strong>${escape(room.profile?.name ?? '이름 미등록 아동')}</strong><span>AI 도우미 열기</span></button>`).join('')}</div>`;
+  dialog.addEventListener('cancel', event => { event.preventDefault(); closeAiChildPicker(true); });
+  dialog.addEventListener('click', event => {
+    const button = event.target.closest('button');
+    if (!button) return;
+    if (button.hasAttribute('data-ai-child-close')) { closeAiChildPicker(true); return; }
+    if (button.dataset.aiChild) {
+      if (!connected || aiChildPickerSnapshot !== aiSelectionSnapshot()) { closeAiChildPicker(true); return; }
+      void openAiForRoom(button.dataset.aiChild);
+    }
+  });
+  aiChildPickerSnapshot = aiSelectionSnapshot(); aiChildPicker = dialog;
+  document.body.append(dialog); dialog.showModal();
+}
+
 function invalidate() {
+  closeAiChildPicker();
+  aiAssistant.close(false);
   viewer.suspend();
   media.suspend();
   drafts.suspend();
@@ -156,6 +226,8 @@ function rememberReadingPosition() {
   if (position) readingPositions.set(draftKey(), position);
 }
 function resetProjections({ selectionOnly = false, recovery = 'checking' } = {}) {
+  closeAiChildPicker();
+  aiAssistant.close(false);
   projectionRecovery = recovery;
   rememberReadingPosition();
   chatLayout.disconnect();
@@ -281,7 +353,7 @@ function showWorkspace(identity, selectedCenterId = null) {
   }
   app.innerHTML = `<section class="workspace">
     <header class="workspace-head"><div><p class="eyebrow">${escape(roleName(getContext().role))}로 연결됨</p></div>
-      <details class="account-menu"><summary>${workspaceIcon('account')}<span>내 계정</span></summary><div class="account-panel"><p class="account">${escape(user.email)}</p><div class="actions"><button type="button" data-action="self-profile">계정 설정</button><button type="button" data-action="refresh">새로고침</button><button type="button" data-action="logout">로그아웃</button></div></div></details></header>
+      <div class="workspace-tools"><button type="button" data-action="ai-assistant">AI 도우미</button><details class="account-menu"><summary>${workspaceIcon('account')}<span>내 계정</span></summary><div class="account-panel"><p class="account">${escape(user.email)}</p><div class="actions"><button type="button" data-action="self-profile">계정 설정</button><button type="button" data-action="refresh">새로고침</button><button type="button" data-action="logout">로그아웃</button></div></div></details></div></header>
     ${choices.length > 1 ? `<label class="center-label">센터 선택<select id="center">${choices.map((c) => `<option value="${escape(c.id)}" ${c.id === centerId ? 'selected' : ''}>${escape(c.id)} · ${escape(roleName(c.role))}</option>`).join('')}</select></label>` : ''}
     <nav class="main-nav" aria-label="주 메뉴">${workspaceNavigationMarkup(getContext().role)}</nav>
     <div class="child-toolbar" hidden><label for="child-select">아이 선택</label><select id="child-select" disabled></select></div>
@@ -291,17 +363,26 @@ function showWorkspace(identity, selectedCenterId = null) {
     <section data-page="records" hidden aria-label="기록"><header class="page-heading"><h1 data-page-title tabindex="-1">기록</h1></header><div class="surface-card" data-testid="records-content"></div></section>
     <section data-page="child" hidden aria-label="${recipientRole() ? '참여 정보' : '아이 정보'}"><header class="page-heading"><h1 data-page-title tabindex="-1">${recipientRole() ? '참여 정보' : '아이 정보'}</h1></header><div data-testid="child-content"></div></section>
     <div data-care-parking hidden><section data-testid="care" aria-label="기록과 가정 활동 연결"></section></div>
-    <div data-media-parking hidden><section data-testid="media-upload-panel" aria-label="사진·영상 업로드 시험"></section></div>
+    <div data-media-parking hidden><section id="chat-media-panel" data-testid="media-upload-panel" aria-label="사진·영상 업로드 시험"></section></div>
     <div id="attachment-viewer"></div>
   </section>`;
   window.scrollTo({ top: 0, behavior: 'instant' });
   careHost = app.querySelector('[data-testid="care"]'); care.bind(careHost);
   mediaHost = app.querySelector('[data-testid="media-upload-panel"]'); media.bind(mediaHost);
+  mediaHost.addEventListener('toggle', (event) => {
+    if (!event.target.matches('[data-media-details]')) return;
+    // The native summary closes the panel opened by the picker shortcut.
+    // Return focus before the collapsed panel is removed from the layout.
+    if (!event.target.open && mediaHost.contains(document.activeElement))
+      app.querySelector('[data-chat-attach]')?.focus({ preventScroll: true });
+    updateComposer();
+  }, true);
   viewer.bind(app.querySelector('#attachment-viewer'));
   resetProjections();
   bindNewsActivation(app.querySelector('.workspace'), () => generation,
     () => announce('소식 목록이 바뀌었어요. 아이 이름을 확인한 뒤 다시 선택해 주세요.'));
   bindAccountMenu(app.querySelector('.workspace'));
+  app.querySelector('[data-action="ai-assistant"]').addEventListener('click', () => { void openAiFromWorkspace(); });
   app.querySelector('[data-action="refresh"]').addEventListener('click', () => { void refresh(); });
   app.querySelector('[data-action="logout"]').addEventListener('click', () => { void logout(); });
   app.querySelector('[data-action="self-profile"]').addEventListener('click', () => { void openSelfProfile(); });
@@ -663,6 +744,22 @@ function fitChatViewport() {
   list.style.height = `${height}px`;
   restoreMessagePosition(list, position);
 }
+function restoreChatAfterAiDismissal() {
+  // Opening the top account-area AI button can scroll a mobile room upward.
+  // Only explicit dismissal returns to the bounded chat frame; transitions to
+  // another dialog, polling, context invalidation and desktop focus do not.
+  if (phase !== 'workspace' || activeView !== 'chat' || !roomOpen || !connected ||
+      document.querySelector('dialog[open]')) return false;
+  const header = app.querySelector('.room-head'), nav = app.querySelector('.main-nav');
+  const list = app.querySelector('[data-testid="message-list"]');
+  if (!header || !nav || !list || getComputedStyle(nav).position !== 'fixed') return false;
+  const position = captureMessagePosition(list);
+  app.querySelector('#room-title')?.focus({ preventScroll: true });
+  header.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'instant' });
+  fitChatViewport();
+  restoreMessagePosition(list, position);
+  return true;
+}
 function resizeChatViewport() {
   fitChatViewport();
   if (phase !== 'workspace' || activeView !== 'chat' || !roomOpen || !connected) return;
@@ -674,15 +771,21 @@ function resizeChatViewport() {
 }
 function preserveChatDisclosurePosition(event) {
   if (phase !== 'workspace' || activeView !== 'chat' || !roomOpen || !connected ||
-      !event.target.closest('.room-head summary, .chat-tools summary, [data-chat-media] summary')) return;
+      !event.target.closest('.room-head summary, .chat-tools summary, [data-chat-media] summary, [data-chat-attach]')) return;
   const list = app.querySelector('[data-testid="message-list"]');
+  const mediaSummary = event.target.closest('[data-chat-media] [data-media-details] > summary');
+  const closingMedia = mediaSummary?.parentElement?.open === true;
   const position = captureMessagePosition(list), turn = generation, selectedRoom = roomId;
   // Click runs before the native details toggle, including keyboard activation.
   // Preserve the pre-toggle bookmark after flex layout changes the reading pane.
   requestAnimationFrame(() => {
     if (phase === 'workspace' && activeView === 'chat' && roomOpen && connected &&
         generation === turn && roomId === selectedRoom && list?.isConnected &&
-        app.querySelector('[data-testid="message-list"]') === list) restoreMessagePosition(list, position);
+        app.querySelector('[data-testid="message-list"]') === list) {
+      restoreMessagePosition(list, position);
+      if (closingMedia && !mediaSummary.parentElement.open)
+        app.querySelector('[data-chat-attach]')?.focus({ preventScroll: true });
+    }
   });
 }
 function changeView(view) {
@@ -708,6 +811,13 @@ function paint(node, html) {
 }
 function renderSurfaces() {
   if (phase !== 'workspace') return;
+  if (aiChildPicker?.open && (!connected || aiChildPickerSnapshot !== aiSelectionSnapshot())) closeAiChildPicker();
+  aiAssistant.sync();
+  const aiButton = app.querySelector('[data-action="ai-assistant"]');
+  if (aiButton) {
+    aiButton.disabled = !connected || !rooms.length || aiEntryPending;
+    aiButton.title = !connected ? '연결을 확인하고 있어요.' : !rooms.length ? '연결된 아이가 있어야 사용할 수 있어요.' : '아이와 연결된 AI 도우미 열기';
+  }
   // Retain a single host, dialog and mutation controller across all four menus.
   renderInbox();
   const period = committedPeriod, role = getContext().role;
@@ -764,11 +874,12 @@ function renderRoom() {
       <p class="history-notice small" data-history-notice role="status" hidden></p>
       <nav class="history-controls" data-history-controls aria-label="이전·다음 대화 소식" hidden><button type="button" data-action="history-older">이전 소식</button><button type="button" data-action="history-newer">다음 소식</button><button type="button" data-action="history-latest">최신 소식</button></nav></div>
       <ol class="message-list" data-testid="message-list" aria-label="대화 내용"></ol>
-      <form class="composer"><label for="message">메시지</label><textarea id="message" name="message" rows="2" maxlength="2000" placeholder="메시지 입력"></textarea>
+      <form class="composer"><button type="button" class="composer-attach" data-chat-attach aria-label="사진·동영상 선택" aria-controls="chat-media-panel" disabled><span class="composer-attach-icon" aria-hidden="true">+</span><span class="composer-attach-count" data-chat-attachment-count aria-hidden="true" hidden></span></button><label for="message">메시지</label><textarea id="message" name="message" rows="2" maxlength="2000" placeholder="메시지 입력"></textarea>
         <p class="small" data-testid="send-error" role="status" hidden></p><div class="composer-actions"><button type="submit" class="primary">보내기</button></div></form>
       <div data-chat-media></div>`;
     for (const child of container.children) if (!child.matches('.message-list')) chatLayout.observe(child);
     container.addEventListener('click', preserveChatDisclosurePosition, true);
+    container.querySelector('[data-chat-attach]').addEventListener('click', openChatAttachmentPicker);
     container.querySelector('form').addEventListener('submit', (event) => { event.preventDefault(); void send(); });
     container.querySelector('textarea').addEventListener('input', (event) => {
       drafts.edit(draftKey(), event.target.value); updateComposer();
@@ -838,12 +949,31 @@ function renderRoom() {
   }
   updateComposer(); requestAnimationFrame(tryRead);
 }
+function openChatAttachmentPicker() {
+  if (phase !== 'workspace' || activeView !== 'chat' || !roomOpen || !connected || recipientRole() || historyNavigation) return;
+  // Keep the native picker inside this user activation. The media owner checks
+  // scope and pending sends; selecting files never uploads or sends them.
+  media.openPicker();
+  updateComposer();
+}
 function updateComposer() {
   const textarea = app.querySelector('#message'); if (!textarea || !roomId) return;
   const draft = drafts.get(draftKey());
   if (textarea.value !== draft.body) textarea.value = draft.body;
   textarea.readOnly = !!draft.operation;
-  const button = app.querySelector('.composer button'), error = app.querySelector('[data-testid="send-error"]');
+  const button = app.querySelector('.composer button[type="submit"]'), error = app.querySelector('[data-testid="send-error"]');
+  const attach = app.querySelector('[data-chat-attach]');
+  if (attach) {
+    const details = mediaHost?.querySelector('[data-media-details]');
+    const count = mediaHost?.querySelectorAll('[data-testid="media-upload-row"]').length ?? 0;
+    attach.hidden = recipientRole();
+    attach.disabled = !connected || !!historyNavigation || !details || !!draft.operation || !!media.busy;
+    attach.title = count ? `사진·동영상 추가 · 선택 파일 ${count}개` : '사진·동영상 선택';
+    const badge = attach.querySelector('[data-chat-attachment-count]');
+    badge.hidden = count === 0;
+    badge.textContent = count ? String(count) : '';
+    attach.setAttribute('aria-label', attach.title);
+  }
   let attachments = [];
   try { attachments = draft.operation ? (draft.operation.attachments ?? []) : (mediaAllowed() ? media.captureAttachments() : []); }
   catch { attachments = null; }
@@ -889,7 +1019,7 @@ async function send() {
   }
 }
 async function tryRead() {
-  if (phase !== 'workspace' || activeView !== 'chat' || !roomOpen || !connected || historyNavigation || readBusy || !roomId || care.dialog?.open || viewer.dialog?.open || document.querySelector('#self-profile-dialog')?.open || document.visibilityState !== 'visible' || !navigator.onLine) return;
+  if (phase !== 'workspace' || activeView !== 'chat' || !roomOpen || !connected || historyNavigation || readBusy || !roomId || care.dialog?.open || viewer.dialog?.open || aiAssistant.dialog?.open || aiAssistant.audioUi?.dialog?.open || document.querySelector('#self-profile-dialog')?.open || document.visibilityState !== 'visible' || !navigator.onLine) return;
   const list = app.querySelector('[data-testid="message-list"]'); if (!list) return;
   const viewport = window.visualViewport, viewportTop = viewport?.offsetTop ?? 0;
   const viewportBottom = viewport ? viewportTop + viewport.height : window.innerHeight;
