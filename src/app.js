@@ -51,6 +51,7 @@ import {
 } from "./ui.js";
 
 const app = document.querySelector("#app");
+const sharedChatEnabled = document.documentElement.dataset.sharedChat === 'enabled';
 observeViewport();
 document.title = `${BRAND.name} · ${BRAND.tagline}`;
 const dialog = document.querySelector("#dialog");
@@ -108,6 +109,7 @@ try {
 } catch {
   /* UI preferences are optional. */
 }
+if (sharedChatEnabled && view === 'chat') { view = 'home'; chatOpened = false; }
 const actor = () => ACCOUNTS[account];
 const getView = () => project(db, actor(), childId);
 let chatTarget = "";
@@ -280,6 +282,8 @@ function render() {
     )}</select></div></header><main id="main" tabindex="-1"><div class="page-heading"><div><p class="eyebrow">${dateLabel(today(), { year: "numeric", month: "long", day: "numeric", weekday: "long" })}</p><h1>${{ home: account === "center" ? "오늘의 센터" : account === "guardian" ? "아이의 소식을 함께 나눠요" : "소식에서 다음 만남으로", chat: "대화", children: account === "guardian" ? "아이를 함께 이해해요" : "우리 아이들", records: account === "guardian" ? "센터에서 전해온 기록" : "기록과 변화", activities: "가정에서 이어가는 시간", schedule: "함께하는 일정", members: "구성원" }[view]}</h1></div>${primaryAction}</div>${context}<div id="view-content">${content}</div><footer class="page-footer">${e(BRAND.version)} · 실제 아동 정보는 입력하지 마세요.</footer></main></div><nav class="mobile-nav" aria-label="모바일 메뉴">${nav}</nav></div>`;
   app.querySelector(".topbar .demo-switch").insertAdjacentHTML("beforebegin",
     `<div class="topbar-actions">${button("AI 도우미", "web-ai", "", "text web-ai-entry")}${button(`${icon("child")}<span>내 표시 이름</span>`, "member-profile", "", "text member-profile-entry", 'aria-label="내 표시 이름"')}${accountButton("로그인 화면", "login", "", "text account-login-entry")}</div>`);
+  if (sharedChatEnabled && view === 'home') app.querySelector('#view-content').insertAdjacentHTML('afterbegin',
+    `<section class="panel"><h2>상대방과 소식을 나눠요</h2><p>시연 계정으로 로그인하면 다른 기기와 메시지를 주고받을 수 있어요. 아래 기록과 카드는 이 브라우저의 화면 예시입니다.</p><a class="button primary" href="/chat/">공용 대화 시작하기</a></section>`);
 }
 function emptyAssignmentView() {
   const description = account === "guardian"
@@ -845,6 +849,12 @@ document.addEventListener("click", (event) => {
   }
   if (chat.sending || chat.editor?.busy) {
     flash("소식과 첨부를 확인하고 있어요. 완료될 때까지 기다려 주세요.");
+    return;
+  }
+  if (sharedChatEnabled && ((action === 'nav' && id === 'chat') || action === 'start-chat' || action === 'open-chat')) {
+    // Demo child/message IDs never select a server room. The server supplies
+    // only the rooms belonging to the separately authenticated account.
+    location.assign('/chat/');
     return;
   }
   if (action === "add-assessment") {

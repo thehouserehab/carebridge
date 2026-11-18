@@ -6,7 +6,8 @@
   "installCommand": "npm ci --ignore-scripts",
   "regions": ["icn1"],
   "functions": {
-    "api/ai/*.js": { "maxDuration": 30, "supportsCancellation": true }
+    "api/ai/*.js": { "maxDuration": 30, "supportsCancellation": true },
+    "api/chat/*.js": { "maxDuration": 30, "supportsCancellation": true }
   },
   "headers": [
     {
@@ -21,7 +22,7 @@
       ]
     },
     {
-      "source": "/api/ai/(.*)",
+      "source": "/api/(.*)",
       "headers": [
         { "key": "Cache-Control", "value": "private, no-store" },
         { "key": "CDN-Cache-Control", "value": "no-store" },
