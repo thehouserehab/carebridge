@@ -48,11 +48,7 @@ function source(config, request) {
       (site !== null && site !== 'same-origin' && !(site === 'none' && !mutation)) ||
       (mutation && (origin !== url.origin || request.headers.get('x-carebridge-chat') !== '1'))) fail('CROSS_ORIGIN_DENIED');
 }
-async function readBody(request) {
-  if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(request.headers.get('content-type') ?? '') ||
-      request.headers.has('content-encoding')) fail('INVALID_INPUT');
-  const length = request.headers.get('content-length');
-  if (length !== null && (!/^\d+$/.test(length) || Number(length) > MAX_BODY_BYTES)) fail('INVALID_INPUT');
+async function readBytes(request, maxBytes) {
   if (!request.body || request.signal.aborted) fail('INVALID_INPUT');
   const reader = request.body.getReader(), chunks = [];
   let bytes = 0, timedOut = false;
@@ -65,13 +61,29 @@ async function readBody(request) {
       const part = await reader.read();
       if (part.done) break;
       bytes += part.value.byteLength;
-      if (bytes > MAX_BODY_BYTES) fail('INVALID_INPUT');
+      if (bytes > maxBytes) fail('INVALID_INPUT');
       chunks.push(part.value);
     }
     if (timedOut || request.signal.aborted) fail('INVALID_INPUT');
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)));
+    return Buffer.concat(chunks);
   } catch { fail('INVALID_INPUT'); }
   finally { clearTimeout(timer); request.signal.removeEventListener('abort', cancel); void reader.cancel().catch(() => {}); reader.releaseLock(); }
+}
+async function readBody(request) {
+  if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(request.headers.get('content-type') ?? '') ||
+      request.headers.has('content-encoding')) fail('INVALID_INPUT');
+  const length = request.headers.get('content-length');
+  if (length !== null && (!/^\d+$/.test(length) || Number(length) > MAX_BODY_BYTES)) fail('INVALID_INPUT');
+  const bytes = await readBytes(request, MAX_BODY_BYTES);
+  try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+  catch { fail('INVALID_INPUT'); }
+}
+async function requireEmptyBody(request) {
+  const length = request.headers.get('content-length');
+  if (length !== null && length !== '0') fail('INVALID_INPUT');
+  // The Vercel Fetch adapter supplies a stream for DELETE even when the
+  // IncomingMessage has no bytes. Verify emptiness within the same read deadline.
+  if (request.body !== null) await readBytes(request, 0);
 }
 function query(url, fields) {
   const result = {};
@@ -119,8 +131,7 @@ export function createWebChatHandler({ env = process.env, getServices = webChatS
       const allowed = sessionRoute ? ['GET', 'POST', 'DELETE'] : roomsRoute ? ['GET'] : roomRoute[2] === 'messages' ? ['GET', 'POST'] : ['POST'];
       if (!allowed.includes(request.method)) return denied('METHOD_NOT_ALLOWED');
       if (sessionRoute && url.search) fail('INVALID_INPUT');
-      if (request.method !== 'POST' && (request.body !== null ||
-          (request.headers.has('content-length') && request.headers.get('content-length') !== '0'))) fail('INVALID_INPUT');
+      if (request.method !== 'POST') await requireEmptyBody(request);
       const token = tokenFrom(request), services = await getServices();
       if (sessionRoute && request.method === 'POST') {
         const prior = token ? await services.auth.authenticate(token) : null;

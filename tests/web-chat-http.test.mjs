@@ -185,6 +185,58 @@ test('session and logout do not expose unknown backend failures or erase another
   assert.deepEqual(await error.json(), { error: { code: 'CHAT_UNAVAILABLE' } });
 });
 
+function streamedLogout(stream, { headers = {}, signal, session = token, expected = 'synthetic-therapist' } = {}) {
+  const base = request('/session', { method: 'DELETE', headers, session, expected });
+  return new Request(base.url, { method: base.method, headers: base.headers, body: stream, duplex: 'half', signal });
+}
+
+test('logout accepts Vercel empty DELETE streams with or without Content-Length while retaining cookie rules', async () => {
+  for (const headers of [{}, { 'Content-Length': '0' }]) {
+    const f = fixture();
+    const empty = () => new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(0)); controller.close(); } });
+    const response = await f.handle(streamedLogout(empty(), { headers }));
+    assert.equal(response.status, 200);
+    assert(response.headers.get('set-cookie').includes('Max-Age=0'));
+    assert.equal(f.calls.filter(call => call[0] === 'logout').length, 1);
+    const anonymous = await f.handle(streamedLogout(empty(), { headers, session: null, expected: null }));
+    assert.equal(anonymous.status, 200); assert.equal(anonymous.headers.get('set-cookie'), null);
+    const stale = await f.handle(streamedLogout(empty(), { headers, session: 's'.repeat(43) }));
+    assert.equal(stale.status, 200); assert.equal(stale.headers.get('set-cookie'), null);
+    const swapped = await f.handle(streamedLogout(empty(), { headers, expected: 'another-user' }));
+    assert.equal(swapped.status, 401);
+    assert.equal(f.calls.filter(call => call[0] === 'logout').length, 1);
+  }
+});
+
+test('logout rejects actual bytes, positive or malformed lengths, failed and aborted streams before authentication', async () => {
+  const cases = [
+    () => streamedLogout(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([32])); controller.close(); } })),
+    () => streamedLogout(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([32])); controller.close(); } }), { headers: { 'Content-Length': '0' } }),
+    () => streamedLogout(new ReadableStream({ start(controller) { controller.close(); } }), { headers: { 'Content-Length': '1' } }),
+    () => streamedLogout(new ReadableStream({ start(controller) { controller.close(); } }), { headers: { 'Content-Length': 'unknown' } }),
+    () => streamedLogout(new ReadableStream({ start(controller) { controller.error(new Error('synthetic stream failure')); } })),
+    () => streamedLogout(new ReadableStream({ start(controller) { controller.close(); } }), { signal: AbortSignal.abort() }),
+  ];
+  for (const create of cases) {
+    const f = fixture(), response = await f.handle(create());
+    assert.equal(response.status, 400); assert.equal(await errorCode(response), 'INVALID_INPUT');
+    assert.equal(response.headers.get('set-cookie'), null); assert.deepEqual(f.calls, []);
+  }
+  const f = fixture(), controller = new AbortController(); let cancelled = false;
+  const pending = f.handle(streamedLogout(new ReadableStream({ cancel() { cancelled = true; } }), { signal: controller.signal }));
+  controller.abort();
+  const aborted = await pending;
+  assert.equal(aborted.status, 400); assert.equal(await errorCode(aborted), 'INVALID_INPUT');
+  assert.equal(cancelled, true); assert.deepEqual(f.calls, []);
+});
+
+test('logout cancels a DELETE stream that does not finish within the five-second deadline', { timeout: 7000 }, async () => {
+  const f = fixture(); let cancelled = false;
+  const response = await f.handle(streamedLogout(new ReadableStream({ cancel() { cancelled = true; } })));
+  assert.equal(response.status, 400); assert.equal(await errorCode(response), 'INVALID_INPUT');
+  assert.equal(cancelled, true); assert.deepEqual(f.calls, []);
+});
+
 let PGlite;
 try {
   const serverRequire = createRequire(new URL('../server/package.json', import.meta.url));
