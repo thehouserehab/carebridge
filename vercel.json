@@ -7,8 +7,11 @@
   "regions": ["icn1"],
   "functions": {
     "api/ai/*.js": { "maxDuration": 30, "supportsCancellation": true },
-    "api/chat/*.js": { "maxDuration": 30, "supportsCancellation": true }
+    "api/chat.js": { "maxDuration": 30, "supportsCancellation": true }
   },
+  "rewrites": [
+    { "source": "/api/chat/:path*", "destination": "/api/chat?path=:path*" }
+  ],
   "headers": [
     {
       "source": "/(.*)",

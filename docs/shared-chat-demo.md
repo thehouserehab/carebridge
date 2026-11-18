@@ -15,7 +15,7 @@
 ## 서버 구성
 
 - 화면: `shared-chat.html`, `src/shared-chat*.js`, `src/shared-chat.css`
-- 전용 API: `api/chat/[...path].js`, `server/web-chat-http.mjs`
+- 전용 API: `api/chat.js`, `server/web-chat-http.mjs`; Vercel의 명시적 rewrite로 하위 경로 연결
 - 공용 DB 연결: `server/web-chat-runtime.mjs`; 기존 `Auth`, `Conversations`, `Children` 서비스 사용
 - 일회성 준비: `server/web-chat-setup.mjs`; 빈 전용 DB 확인 후 기존 23개 마이그레이션·DB 권한·가상 계정 생성
 

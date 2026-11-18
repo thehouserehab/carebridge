@@ -2,7 +2,7 @@
 
 ## 구성
 
-- HTML/CSS/JavaScript 화면과 `api/ai/`, `api/chat/`의 Node.js Vercel Functions로 구성한다. AI 함수는 기존 OpenAI provider를, 공용 대화 함수는 기존 인증·대화 서비스와 공용 PostgreSQL을 사용한다.
+- HTML/CSS/JavaScript 화면과 `api/ai/`, `api/chat.js`의 Node.js Vercel Functions로 구성한다. AI 함수는 기존 OpenAI provider를, 공용 대화 함수는 기존 인증·대화 서비스와 공용 PostgreSQL을 사용한다.
 - `local-api/`와 `server/`의 PostgreSQL 저장·기존 계정 인증·대화·첨부 API는 별도 로컬 환경이다. 이를 Vercel 운영 API로 배포하지 않는다. 해당 서버 변경은 별도로 `npm --prefix server ci --ignore-scripts`와 `npm run test:server`를 실행한다.
 - Node.js 24, `npm ci --ignore-scripts`, `npm test && npm run build`, 출력 `dist/`를 사용한다.
 - Vercel 프로젝트는 이 저장소의 `main`을 Production Branch로 사용한다.

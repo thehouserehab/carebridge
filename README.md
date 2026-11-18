@@ -21,7 +21,7 @@
 | 최신 통합 프로토타입 | `local-api/`, `server/prototype-*.mjs` | `npm run prototype` | 가상 계정·제공 첨부 샘플·AI 예시 응답으로 전체 흐름 시연 |
 | 최신 UI·API 시험 앱 | `local-api/`, `server/` | `npm run dev:local-api` | 가상 계정으로 로그인하는 로컬 전용 시험 환경 |
 | 기존 정적 프로토타입 | `src/` | `npm run dev` | 브라우저 내 가상 역할 전환 데모 |
-| Vercel 웹 프로토타입 | `dist/`, `api/ai/`, `api/chat/` | `npm run build` 후 Vercel 배포 | 정적 예시 화면·OpenAI 도우미·가상 계정의 공용 텍스트 대화 |
+| Vercel 웹 프로토타입 | `dist/`, `api/ai/`, `api/chat.js` | `npm run build` 후 Vercel 배포 | 정적 예시 화면·OpenAI 도우미·가상 계정의 공용 텍스트 대화 |
 
 Vercel 웹은 `src/`의 정적 예시 화면과 전용 AI·공용 대화 함수를 사용합니다. 공용 대화의 계정·세션·텍스트 메시지는 서버 DB에 저장하며, 홈의 기록·일정·첨부 예시는 브라우저에 저장합니다. `local-api/`의 전체 업무·첨부 API는 별도 로컬 환경으로 유지합니다. AI에는 직접 보낸 질문·최근 AI 대화 또는 확인한 활동·반응만 전송합니다. 공개 데모에는 실제 아동 정보·사진·영상을 입력하지 마세요. [웹 AI 구성과 배포 확인](docs/web-ai-deployment.md).
 
