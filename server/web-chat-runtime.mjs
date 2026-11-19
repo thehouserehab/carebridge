@@ -1,6 +1,7 @@
 import { Auth } from './auth.mjs';
 import { Conversations } from './conversations.mjs';
 import { Children } from './profiles.mjs';
+import { WebChatMedia } from './web-chat-media.mjs';
 import { X509Certificate } from 'node:crypto';
 
 const ID = /^[A-Za-z0-9_-]{1,100}$/;
@@ -73,7 +74,7 @@ export function createWebChatRuntime({ env = process.env, databaseFactory } = {}
             ssl: { rejectUnauthorized: true, ...(config.databaseCa === undefined ? {} : { ca: config.databaseCa }) }, max: 2, connectionTimeoutMillis: 5000,
             idleTimeoutMillis: 10000, maxLifetimeSeconds: 300, allowExitOnIdle: true });
           return Object.freeze({ auth: new Auth(database, { sessionTtlSeconds: 3600 }),
-            conversations: new Conversations(database), profiles: new Children(database) });
+            conversations: new Conversations(database), profiles: new Children(database), media: new WebChatMedia(database) });
         })();
         servicesPromise.catch(() => { servicesPromise = undefined; });
       }

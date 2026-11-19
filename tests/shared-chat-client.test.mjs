@@ -24,6 +24,33 @@ test('account replacement while awaiting a response rejects the stale result', a
   const pending = client.request('/api/chat/rooms'); client.userId = 'other-account'; resolve(response({ rooms: [] }));
   await assert.rejects(pending, error => error.code === 'AUTH_REQUIRED');
 });
+
+test('account replacement or clearing during JSON body reading cannot restore the previous session', async () => {
+  for (const nextAccount of ['other-account', null]) {
+    let beginBody, finishBody;
+    const bodyStarted = new Promise(resolve => { beginBody = resolve; });
+    const result = response(session);
+    result.text = () => { beginBody(); return new Promise(resolve => { finishBody = resolve; }); };
+    const client = new SharedChatClient({ fetch: async () => result }); client.userId = user.userId;
+    const pending = client.session(); await bodyStarted;
+    // SharedChatApp.clear() clears this exact client identity field.
+    client.userId = nextAccount; finishBody(JSON.stringify(session));
+    await assert.rejects(pending, error => error.code === 'AUTH_REQUIRED');
+    assert.equal(client.userId, nextAccount);
+  }
+});
+
+test('aborting during JSON body reading rejects the completed body before applying its session', async () => {
+  let beginBody, finishBody;
+  const bodyStarted = new Promise(resolve => { beginBody = resolve; });
+  const result = response(session);
+  result.text = () => { beginBody(); return new Promise(resolve => { finishBody = resolve; }); };
+  const client = new SharedChatClient({ fetch: async () => result });
+  const controller = new AbortController(), pending = client.session(controller.signal); await bodyStarted;
+  controller.abort(); finishBody(JSON.stringify(session));
+  await assert.rejects(pending, error => error.code === 'CANCELLED');
+  assert.equal(client.userId, null);
+});
 test('message pages from changed revisions are discarded before returning a complete snapshot', async () => {
   const calls = []; const client = new SharedChatClient({ fetch: async path => {
     calls.push(path); const index = calls.length;

@@ -76,7 +76,7 @@ export async function verifySharedChatBrowser({ origin, therapist, guardian, rep
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }, { width: 320, height: 568 }]) {
       await first.setViewportSize(viewport); await first.waitForFunction(() => parseInt(document.documentElement.style.getPropertyValue('--chat-height'), 10) === Math.round(visualViewport.height)); await first.locator('textarea').focus();
       const layout = await first.evaluate(() => {
-        const input = document.querySelector('textarea').getBoundingClientRect(), send = document.querySelector('[data-chat-compose] button').getBoundingClientRect();
+        const input = document.querySelector('textarea').getBoundingClientRect(), send = document.querySelector('[data-chat-send]').getBoundingClientRect();
         return { noOverflow: document.documentElement.scrollWidth <= innerWidth + 1, inputFits: input.left >= -1 && input.right <= innerWidth + 1 && input.top >= 0 && input.bottom <= innerHeight + 1,
           sendFits: send.left >= -1 && send.right <= innerWidth + 1 && send.top >= 0 && send.bottom <= innerHeight + 1 };
       });

@@ -2,6 +2,7 @@ import { AuthError } from './auth.mjs';
 import { RepositoryError } from './errors.mjs';
 import { localMessageView } from './local-care-http.mjs';
 import { readWebChatConfig, webChatServices } from './web-chat-runtime.mjs';
+import { WEB_CHAT_MEDIA_MAX_BYTES, WEB_CHAT_MEDIA_MAX_FILES, WEB_CHAT_MEDIA_TYPES, webChatMediaName } from '../src/shared-chat-media-policy.js';
 
 export const WEB_CHAT_COOKIE = '__Secure-carebridge-chat';
 const MAX_BODY_BYTES = 24 * 1024;
@@ -11,7 +12,8 @@ const CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/;
 const statuses = { AUTH_REQUIRED: 401, AUTH_INVALID: 401, SESSION_PRESENT: 409,
   INVALID_INPUT: 400, CROSS_ORIGIN_DENIED: 403, NOT_FOUND: 404, FORBIDDEN: 403,
   IDEMPOTENCY_CONFLICT: 409, SEQUENCE_LIMIT: 409, CHAT_UNAVAILABLE: 503,
-  METHOD_NOT_ALLOWED: 405, TOO_MANY_ROOMS: 409 };
+  METHOD_NOT_ALLOWED: 405, TOO_MANY_ROOMS: 409, MEDIA_LIMIT: 413, INVALID_MEDIA: 415,
+  MEDIA_STORAGE_FULL: 409, UPLOAD_EXPIRED: 409, ATTACHMENT_NOT_FOUND: 404 };
 class BoundaryError extends Error { constructor(code) { super(code); this.code = code; } }
 const fail = code => { throw new BoundaryError(code); };
 const exact = (value, keys) => value !== null && typeof value === 'object' && !Array.isArray(value) &&
@@ -48,12 +50,12 @@ function source(config, request) {
       (site !== null && site !== 'same-origin' && !(site === 'none' && !mutation)) ||
       (mutation && (origin !== url.origin || request.headers.get('x-carebridge-chat') !== '1'))) fail('CROSS_ORIGIN_DENIED');
 }
-async function readBytes(request, maxBytes) {
+async function readBytes(request, maxBytes, deadlineMs = 5000, overflowCode = 'INVALID_INPUT') {
   if (!request.body || request.signal.aborted) fail('INVALID_INPUT');
   const reader = request.body.getReader(), chunks = [];
   let bytes = 0, timedOut = false;
   const cancel = () => { void reader.cancel().catch(() => {}); };
-  const timer = setTimeout(() => { timedOut = true; cancel(); }, 5000);
+  const timer = setTimeout(() => { timedOut = true; cancel(); }, deadlineMs);
   request.signal.addEventListener('abort', cancel, { once: true });
   try {
     while (true) {
@@ -61,12 +63,12 @@ async function readBytes(request, maxBytes) {
       const part = await reader.read();
       if (part.done) break;
       bytes += part.value.byteLength;
-      if (bytes > maxBytes) fail('INVALID_INPUT');
+      if (bytes > maxBytes) fail(overflowCode);
       chunks.push(part.value);
     }
     if (timedOut || request.signal.aborted) fail('INVALID_INPUT');
     return Buffer.concat(chunks);
-  } catch { fail('INVALID_INPUT'); }
+  } catch (error) { if (error instanceof BoundaryError) throw error; fail('INVALID_INPUT'); }
   finally { clearTimeout(timer); request.signal.removeEventListener('abort', cancel); void reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 async function readBody(request) {
@@ -114,6 +116,46 @@ function publicError(error) {
   return 'CHAT_UNAVAILABLE';
 }
 
+// Web attachments have their own explicitly bounded storage and validation.
+// Never claim the local quarantine/AV worker has inspected these uploads.
+function publicAttachment(file) {
+  return pick(file, ['id', 'name', 'type', 'size', 'width', 'height', 'duration']);
+}
+function publicMessage(message) {
+  const result = localMessageView(message);
+  if (Array.isArray(message.webAttachments)) {
+    result.attachments = message.hidden || message.deleted ? [] : message.webAttachments.map(publicAttachment);
+    result.attachmentCount = result.attachments.length;
+  }
+  return result;
+}
+function uploadQuery(url) {
+  const values = [...url.searchParams];
+  if (values.length !== 1 || values[0][0] !== 'clientId' || !/^[A-Za-z0-9-]{8,100}$/.test(values[0][1])) fail('INVALID_INPUT');
+  return values[0][1];
+}
+async function uploadBytes(request) {
+  const type = request.headers.get('content-type');
+  if (!WEB_CHAT_MEDIA_TYPES.includes(type) || request.headers.has('content-encoding')) fail('INVALID_MEDIA');
+  const length = request.headers.get('content-length');
+  if (length !== null && (!/^[1-9][0-9]*$/.test(length) || Number(length) > WEB_CHAT_MEDIA_MAX_BYTES)) fail('MEDIA_LIMIT');
+  const bytes = await readBytes(request, WEB_CHAT_MEDIA_MAX_BYTES, 20000, 'MEDIA_LIMIT');
+  if (!bytes.length || (length !== null && Number(length) !== bytes.length)) fail('INVALID_INPUT');
+  return { bytes, type };
+}
+function mediaResponse(value) {
+  if (!WEB_CHAT_MEDIA_TYPES.includes(value.type) || !(value.bytes instanceof Uint8Array) ||
+      value.bytes.length < 1 || value.bytes.length > WEB_CHAT_MEDIA_MAX_BYTES || value.bytes.length !== value.size) fail('CHAT_UNAVAILABLE');
+  return new Response(value.bytes, { headers: {
+    'Content-Type': value.type, 'Content-Length': String(value.size),
+    'Content-Disposition': `inline; filename="${webChatMediaName(value.type)}"`,
+    'Cache-Control': 'private, no-store, max-age=0', 'CDN-Cache-Control': 'no-store',
+    'Vercel-CDN-Cache-Control': 'no-store', 'Vary': 'Origin, Cookie, X-Carebridge-Chat-User',
+    'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
+    'Cross-Origin-Resource-Policy': 'same-origin', 'Content-Security-Policy': "default-src 'none'; sandbox",
+  } });
+}
+
 /** Public HTTPS transport, deliberately separate from the loopback-only local API. */
 export function createWebChatHandler({ env = process.env, getServices = webChatServices, now = Date.now } = {}) {
   return async function handle(request) {
@@ -127,8 +169,9 @@ export function createWebChatHandler({ env = process.env, getServices = webChatS
       const sessionRoute = path === '/api/chat/session';
       const roomsRoute = path === '/api/chat/rooms';
       const roomRoute = /^\/api\/chat\/rooms\/([A-Za-z0-9_-]{1,100})\/(messages|read)$/.exec(path);
-      if (!sessionRoute && !roomsRoute && !roomRoute) return denied('NOT_FOUND');
-      const allowed = sessionRoute ? ['GET', 'POST', 'DELETE'] : roomsRoute ? ['GET'] : roomRoute[2] === 'messages' ? ['GET', 'POST'] : ['POST'];
+      const mediaRoute = /^\/api\/chat\/rooms\/([A-Za-z0-9_-]{1,100})\/media(?:\/([A-Za-z0-9_-]{1,100}))?$/.exec(path);
+      if (!sessionRoute && !roomsRoute && !roomRoute && !mediaRoute) return denied('NOT_FOUND');
+      const allowed = sessionRoute ? ['GET', 'POST', 'DELETE'] : roomsRoute ? ['GET'] : mediaRoute ? (mediaRoute[2] ? ['GET', 'DELETE'] : ['POST']) : roomRoute[2] === 'messages' ? ['GET', 'POST'] : ['POST'];
       if (!allowed.includes(request.method)) return denied('METHOD_NOT_ALLOWED');
       if (sessionRoute && url.search) fail('INVALID_INPUT');
       if (request.method !== 'POST') await requireEmptyBody(request);
@@ -170,6 +213,24 @@ export function createWebChatHandler({ env = process.env, getServices = webChatS
       expectedUser(request, user, !sessionRoute);
       if (sessionRoute && request.method === 'GET') return json({ enabled: true, authenticated: true, user });
       const identity = { userId: user.userId, centerId: config.centerId };
+      if (mediaRoute) {
+        if (!services.media) fail('CHAT_UNAVAILABLE');
+        const conversationId = mediaRoute[1], attachmentId = mediaRoute[2];
+        if (request.method === 'POST') {
+          const clientId = uploadQuery(url);
+          // Authorize the room before reading or decoding the file body.
+          await services.conversations.inRoom(identity, conversationId, async () => {});
+          const input = await uploadBytes(request);
+          const attachment = await services.media.upload(identity, { conversationId, clientId, ...input });
+          return json({ attachment: publicAttachment(attachment) }, 201);
+        }
+        if (url.search) fail('INVALID_INPUT');
+        if (request.method === 'DELETE') {
+          await services.media.discard(identity, { conversationId, attachmentId });
+          return json({ discarded: true });
+        }
+        return mediaResponse(await services.media.content(identity, { conversationId, attachmentId }));
+      }
       if (roomsRoute) {
         const page = await services.conversations.inbox(identity, query(url, ['offset', 'limit', 'expectedSnapshot']));
         if (page.resetRequired) return json({ snapshot: page.snapshot, resetRequired: true });
@@ -186,7 +247,8 @@ export function createWebChatHandler({ env = process.env, getServices = webChatS
       if (request.method === 'GET') {
         const page = await services.conversations.list(identity, { conversationId, ...query(url, ['after', 'limit', 'expectedRevision']) });
         if (page.resetRequired) return json({ revision: page.revision, resetRequired: true });
-        return json({ messages: page.messages.map(message => localMessageView(message)),
+        const messages = services.media ? await services.media.decorate(identity, { conversationId, messages: page.messages }) : page.messages;
+        return json({ messages: messages.map(publicMessage),
           ...pick(page, ['lastRead', 'unread', 'revision', 'nextCursor', 'hasMore']), resetRequired: false });
       }
       if (url.search) fail('INVALID_INPUT');
@@ -196,10 +258,16 @@ export function createWebChatHandler({ env = process.env, getServices = webChatS
         const result = await services.conversations.markRead(identity, { conversationId, messageId: body.messageId });
         return json({ lastRead: result.lastRead });
       }
-      if (!exact(body, ['clientId', 'body']) || typeof body.clientId !== 'string' || !/^[A-Za-z0-9-]{8,100}$/.test(body.clientId) ||
-          !validText(body.body, 2000) || !body.body.trim()) fail('INVALID_INPUT');
-      const message = await services.conversations.sendText(identity, { conversationId, clientId: body.clientId, body: body.body });
-      return json({ message: localMessageView(message) }, 201);
+      if (!(exact(body, ['clientId', 'body']) || exact(body, ['clientId', 'body', 'attachments'])) ||
+          typeof body.clientId !== 'string' || !/^[A-Za-z0-9-]{8,100}$/.test(body.clientId) || !validText(body.body, 2000)) fail('INVALID_INPUT');
+      const attachments = body.attachments ?? [];
+      if (!Array.isArray(attachments) || attachments.length > WEB_CHAT_MEDIA_MAX_FILES ||
+          attachments.some(file => !exact(file, ['id']) || !ID.test(file.id)) ||
+          new Set(attachments.map(file => file.id)).size !== attachments.length || (!body.body.trim() && !attachments.length)) fail('INVALID_INPUT');
+      const input = { conversationId, clientId: body.clientId, body: body.body };
+      if (attachments.length && !services.media) fail('CHAT_UNAVAILABLE');
+      const message = services.media ? await services.media.send(identity, { ...input, attachments }) : await services.conversations.sendText(identity, input);
+      return json({ message: publicMessage(message) }, 201);
     } catch (error) { return denied(publicError(error)); }
   };
 }

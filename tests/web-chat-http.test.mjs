@@ -10,6 +10,8 @@ import { Auth, AuthError } from '../server/auth.mjs';
 import { Conversations } from '../server/conversations.mjs';
 import { Children } from '../server/profiles.mjs';
 import { migrate } from '../server/migrate.mjs';
+import { WEB_CHAT_MEDIA_MAX_BYTES } from '../src/shared-chat-media-policy.js';
+import { RepositoryError } from '../server/errors.mjs';
 
 const origin = 'https://carebridge.example';
 const env = { CAREBRIDGE_WEB_CHAT_ENABLED: 'true', CAREBRIDGE_CHAT_CENTER_ID: 'synthetic-center',
@@ -42,6 +44,79 @@ function fixture(overrides = {}) {
   return { calls, services, handle: createWebChatHandler({ env, getServices: async () => services }) };
 }
 async function errorCode(response) { return (await response.json()).error?.code; }
+
+function mediaFixture() {
+  const f = fixture(), attachment = { id: 'upload-one', type: 'image/png', name: 'carebridge-photo.png',
+    size: 3, width: 20, height: 20, privateStorageKey: 'PRIVATE_NEVER_RETURN', bytes: Buffer.from([1, 2, 3]) };
+  f.services.conversations.inRoom = async (identity, roomId, work) => { f.calls.push(['authorize-upload-room', identity, roomId]); return work(); };
+  f.services.media = {
+    upload: async (identity, input) => { f.calls.push(['upload', identity, input]); return attachment; },
+    content: async (identity, input) => { f.calls.push(['content', identity, input]); return attachment; },
+    discard: async (identity, input) => { f.calls.push(['discard', identity, input]); },
+    decorate: async (_identity, { messages }) => messages.map(message => ({ ...message, webAttachments: [attachment] })),
+    send: async (identity, input) => ({ ...(await f.services.conversations.sendText(identity, input)), webAttachments: [attachment] }),
+  };
+  const binary = (options = {}) => new Request(origin + '/api/chat/rooms/room-one/media?clientId=synthetic-upload-1', {
+    method: 'POST', headers: { Origin: origin, 'Content-Type': 'image/png', 'X-Carebridge-Chat': '1',
+      Cookie: WEB_CHAT_COOKIE + '=' + token, 'X-Carebridge-Chat-User': 'synthetic-therapist', ...options.headers },
+    body: options.bytes ?? new Uint8Array([1, 2, 3]),
+  });
+  return { ...f, binary };
+}
+
+test('media upload authorizes before reading binary and exposes only attachment metadata', async () => {
+  const f = mediaFixture(), response = await f.handle(f.binary());
+  assert.equal(response.status, 201);
+  assert.deepEqual(await response.json(), { attachment: { id: 'upload-one', name: 'carebridge-photo.png', type: 'image/png', size: 3, width: 20, height: 20 } });
+  assert(f.calls.findIndex(call => call[0] === 'authorize-upload-room') < f.calls.findIndex(call => call[0] === 'upload'));
+  assert.deepEqual(f.calls.find(call => call[0] === 'upload')[2].bytes, Buffer.from([1, 2, 3]));
+  f.services.conversations.inRoom = async () => { throw new RepositoryError('NOT_FOUND'); };
+  const before = f.calls.filter(call => call[0] === 'upload').length;
+  assert.equal((await f.handle(f.binary())).status, 404);
+  assert.equal(f.calls.filter(call => call[0] === 'upload').length, before);
+});
+
+test('media boundaries reject anonymous, switched users, cross-origin, encoding, invalid MIME and oversized streams', async () => {
+  const f = mediaFixture();
+  for (const [headers, expected] of [
+    [{ Cookie: '' }, 401], [{ 'X-Carebridge-Chat-User': 'different-account' }, 401],
+    [{ Origin: 'https://elsewhere.example' }, 403], [{ 'Content-Encoding': 'gzip' }, 415],
+    [{ 'Content-Type': 'image/svg+xml' }, 415], [{ 'Content-Length': String(WEB_CHAT_MEDIA_MAX_BYTES + 1) }, 413],
+  ]) assert.equal((await f.handle(f.binary({ headers }))).status, expected);
+  assert.equal((await f.handle(f.binary({ bytes: new Uint8Array(WEB_CHAT_MEDIA_MAX_BYTES + 1) }))).status, 413);
+  assert.equal((await f.handle(f.binary({ bytes: new Uint8Array(0) }))).status, 400);
+  assert.equal(f.calls.filter(call => call[0] === 'upload').length, 0);
+});
+
+test('protected media bytes require the same account header and are never cacheable or public', async () => {
+  const f = mediaFixture(), path = '/rooms/room-one/media/upload-one';
+  for (const options of [{ session: null }, { expected: null }, { expected: 'other-user' }]) {
+    assert.equal((await f.handle(request(path, options))).status, 401);
+  }
+  assert.equal(f.calls.filter(call => call[0] === 'content').length, 0);
+  const response = await f.handle(request(path));
+  assert.equal(response.status, 200); assert.equal(response.headers.get('content-type'), 'image/png');
+  assert.equal(response.headers.get('content-length'), '3');
+  for (const key of ['Cache-Control', 'CDN-Cache-Control', 'Vercel-CDN-Cache-Control']) assert(response.headers.get(key).includes('no-store'));
+  assert.equal(response.headers.get('cross-origin-resource-policy'), 'same-origin');
+  assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), new Uint8Array([1, 2, 3]));
+  assert.equal((await f.handle(request(path + '?token=not-allowed'))).status, 400);
+  assert.equal((await f.handle(request(path, { method: 'DELETE' }))).status, 200);
+});
+
+test('attachment-only messages preserve the narrow projection and reject duplicate or over-limit references', async () => {
+  const f = mediaFixture(), path = '/rooms/room-one/messages';
+  const body = { clientId: randomUUID(), body: '', attachments: [{ id: 'upload-one' }] };
+  const response = await f.handle(request(path, { method: 'POST', body }));
+  assert.equal(response.status, 201);
+  const value = await response.json(); assert.equal(value.message.attachmentCount, 1);
+  assert.equal(value.message.attachments[0].width, 20); assert(!JSON.stringify(value).includes('PRIVATE_NEVER_RETURN'));
+  for (const attachments of [[{ id: 'upload-one', path: '/private' }], [{ id: 'one' }, { id: 'one' }],
+    Array.from({ length: 5 }, (_, i) => ({ id: 'upload-' + i }))]) {
+    assert.equal((await f.handle(request(path, { method: 'POST', body: { ...body, attachments } }))).status, 400);
+  }
+});
 
 test('web chat configuration requires a dedicated HTTPS origin and verified TLS database settings', () => {
   const config = readWebChatConfig(env);
